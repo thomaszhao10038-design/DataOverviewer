@@ -271,15 +271,15 @@ def app():
     st.sidebar.header("Data Extraction Settings")
     st.sidebar.markdown("Define the location of key data in your raw CSV files.")
     
-    # Use a dictionary to store configuration for each file
-    file_configs = {}
-    
     # Default settings for initial convenience
     default_header_row = 2
     default_date_col = 'A'
     default_time_col = 'B'
-    default_psum_col = 'V' # Assuming 'V' maps to the 'Active Power(W)' in typical templates
+    default_psum_col = 'V' # Re-introduced as default, not hardcoded
 
+    # Use a dictionary to store configuration for each file
+    file_configs = {}
+    
     # --- Configuration Section in Sidebar ---
     
     st.sidebar.markdown("---")
@@ -289,6 +289,7 @@ def app():
     global_header = st.sidebar.number_input("Header Row Number:", min_value=1, value=default_header_row, key="g_header")
     global_date = st.sidebar.text_input("Date Column Letter:", value=default_date_col, max_chars=3, key="g_date").upper()
     global_time = st.sidebar.text_input("Time Column Letter:", value=default_time_col, max_chars=3, key="g_time").upper()
+    # PSum Column Letter (W) is re-introduced
     global_psum = st.sidebar.text_input("PSum Column Letter (W):", value=default_psum_col, max_chars=3, key="g_psum").upper()
     
     st.sidebar.markdown("---")
@@ -301,7 +302,8 @@ def app():
                 'header_row': st.number_input("Header Row:", min_value=1, value=global_header, key=f"h_{i}"),
                 'date_col': st.text_input("Date Col:", value=global_date, key=f"d_{i}").upper(),
                 'time_col': st.text_input("Time Col:", value=global_time, key=f"t_{i}").upper(),
-                'psum_col': st.text_input("PSum Col:", value=global_psum, key=f"p_{i}").upper(),
+                # Now uses individual or global input for PSum
+                'psum_col': st.text_input("PSum Col:", value=global_psum, key=f"p_{i}").upper(), 
             }
 
     # --- Step 2: In-Memory Processing ---
