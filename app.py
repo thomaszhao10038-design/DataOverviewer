@@ -6,6 +6,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers
 from openpyxl.chart import LineChart, Reference, Series
 from openpyxl.utils import get_column_letter
+import datetime # Added for robustness, though not strictly needed here
 
 # --- Configuration & Constants ---
 HEADER_ROW_INDEX = 2
@@ -206,13 +207,13 @@ def build_output_excel(sheets_dict):
             ws.cell(row=2, column=col_start+2, value="Active Power (W)")
             ws.cell(row=2, column=col_start+3, value="kW")
 
-            # START OF USER-REQUESTED CHANGE
+            # START OF USER-REQUESTED CHANGE (Final fix for Date display)
             # Merge UTC column (Starts at row 3). The value is now the date object.
             ws.merge_cells(start_row=merge_start, start_column=col_start, end_row=merge_end, end_column=col_start)
             date_cell = ws.cell(row=merge_start, column=col_start, value=date)
             date_cell.alignment = Alignment(horizontal="center", vertical="center")
-            # Set the number format to ensure the date displays correctly (YYYY-MM-DD)
-            date_cell.number_format = numbers.FORMAT_DATE_YYYYMMDD2
+            # Set the number format explicitly to ensure Excel interprets the numeric value as a date
+            date_cell.number_format = 'YYYY-MM-DD' 
             # END OF USER-REQUESTED CHANGE
 
             # Fill data (starts at row 3)
@@ -315,7 +316,9 @@ def build_output_excel(sheets_dict):
         sorted_dates = sorted(total_sheet_data.keys())
         
         for row_idx, date_obj in enumerate(sorted_dates, 2):
-            date_cell = ws_total.cell(row=row_idx, column=1, value=date_obj.strftime('%Y-%m-%d'))
+            # Applying date format here too, just in case
+            date_cell = ws_total.cell(row=row_idx, column=1, value=date_obj)
+            date_cell.number_format = 'YYYY-MM-DD'
             date_cell.border = thin_border
             date_cell.alignment = Alignment(horizontal="center")
             
