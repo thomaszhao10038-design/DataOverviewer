@@ -44,7 +44,7 @@ def process_uploaded_files(uploaded_files, columns_config, header_index):
         try:
             # Read CSV (using header index)
             # Use 'None' for header to get raw column indices, then drop rows before header_index
-            # FIX: Added sep=';' to handle semicolon-delimited CSVs, common cause of "Error tokenizing data"
+            # FIX: Using sep=';' to handle common tokenization errors
             df_full = pd.read_csv(uploaded_file, header=None, encoding='ISO-8859-1', low_memory=False, sep=';')
 
             # Assign header names from the target row
@@ -53,10 +53,27 @@ def process_uploaded_files(uploaded_files, columns_config, header_index):
             
             # Start data from row index + 1
             df_full = df_full[header_index + 1:].reset_index(drop=True)
+            
+            # Get the maximum number of columns available in the file
+            max_cols = df_full.shape[1]
+            last_col_letter = get_column_letter(max_cols)
+            config_letters = ', '.join(columns_config.keys())
 
             # Map configured indices (A, B, BI) to new DataFrame indices (0-based)
             # We must use iloc for index extraction, as header names might not be unique/clean
-            df_extracted = df_full.iloc[:, col_indices].copy()
+            try:
+                # The problematic line, now wrapped
+                df_extracted = df_full.iloc[:, col_indices].copy()
+            except IndexError:
+                # Custom error handling for out-of-bounds positional indexers
+                st.error(f"Error processing file **{filename}**: Positional indexers are out-of-bounds.")
+                st.error(f"The file only contains {max_cols} columns (up to column **{last_col_letter}**). Please check your configuration: you requested columns {config_letters}.")
+                continue # Skip to the next file
+            except Exception as e:
+                # Catch any other error during extraction
+                raise e
+
+
             df_extracted.columns = list(columns_config.values()) # Assign standardized names
 
             # 1. PSum numeric conversion (handle potential commas, coerce errors)
