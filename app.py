@@ -9,7 +9,7 @@ from openpyxl.utils import get_column_letter
 import datetime
 
 # --- Configuration & Constants ---
-HEADER_ROW_INDEX = 2
+# HEADER_ROW_INDEX is now dynamically set via user input in the sidebar
 PSUM_RAW_NAME = 'PSum (W)'      # Name used after extraction from CSV
 POWER_COL_OUT = 'PSumW'         # Name used after 10-min aggregation and in Excel
 
@@ -22,7 +22,6 @@ def excel_col_to_index(col_str):
         if 'A' <= char <= 'Z':
             index = index * 26 + (ord(char) - ord('A') + 1)
         else:
-            # Added error detail for robustness
             raise ValueError(f"Invalid character in column string: {col_str}")
     return index - 1
 
@@ -30,7 +29,7 @@ def excel_col_to_index(col_str):
 def process_uploaded_files(uploaded_files, columns_config, header_index):
     """
     Reads CSVs, extracts Date, Time, and PSum columns, and consolidates.
-    Returns a dictionary of raw dataframes with standardized column names.
+    The header_index is the 0-based index of the row containing headers.
     """
     processed_data = {}
     col_indices = list(columns_config.keys())
@@ -42,48 +41,41 @@ def process_uploaded_files(uploaded_files, columns_config, header_index):
     for uploaded_file in uploaded_files:
         filename = uploaded_file.name
         try:
-            # Read CSV (using header index)
-            # Use 'None' for header to get raw column indices, then drop rows before header_index
-            # FIX: Using sep=';' to handle common tokenization errors
+            # Read CSV with no header initially (header=None). Columns are 0, 1, 2, ...
             df_full = pd.read_csv(uploaded_file, header=None, encoding='ISO-8859-1', low_memory=False, sep=';')
 
-            # Assign header names from the target row
-            header_row = df_full.iloc[header_index].astype(str)
-            df_full.columns = header_row
-            
-            # Start data from row index + 1
-            df_full = df_full[header_index + 1:].reset_index(drop=True)
-            
-            # Get the maximum number of columns available in the file
-            max_cols = df_full.shape[1]
-            last_col_letter = get_column_letter(max_cols)
-            config_letters = ', '.join(columns_config.keys())
+            # --- FIX: Simplify Data/Header Handling ---
+            # Data rows start from the row *after* the header row index.
+            # We skip the original header row and everything before it.
+            if header_index < 0 or header_index >= len(df_full):
+                st.error(f"Error processing file **{filename}**: Configured Header Row (Index {header_index + 1}) is out of bounds for this file.")
+                continue
 
-            # Map configured indices (A, B, BI) to new DataFrame indices (0-based)
-            # We must use iloc for index extraction, as header names might not be unique/clean
-            try:
-                # The problematic line, now wrapped
-                df_extracted = df_full.iloc[:, col_indices].copy()
-            except IndexError:
-                # Custom error handling for out-of-bounds positional indexers
-                st.error(f"Error processing file **{filename}**: Positional indexers are out-of-bounds.")
-                st.error(f"The file only contains {max_cols} columns (up to column **{last_col_letter}**). Please check your configuration: you requested columns {config_letters}.")
+            # df_data now contains only the rows that should be processed as data (everything after the header row).
+            df_data = df_full.iloc[header_index + 1:].reset_index(drop=True)
+            
+            # Get the maximum number of columns available in the data
+            max_cols = df_data.shape[1]
+            
+            # Check if requested indices are valid
+            invalid_indices = [idx for idx in col_indices if idx >= max_cols]
+            if invalid_indices:
+                last_col_letter = get_column_letter(max_cols)
+                config_letters = ', '.join(get_column_letter(idx + 1) for idx in invalid_indices)
+                st.error(f"Error processing file **{filename}**: Columns {config_letters} are out-of-bounds.")
+                st.error(f"The file only contains {max_cols} columns (up to column **{last_col_letter}**).")
                 continue # Skip to the next file
-            except Exception as e:
-                # Catch any other error during extraction
-                raise e
 
-
-            df_extracted.columns = list(columns_config.values()) # Assign standardized names
+            # Extract columns by integer index (this is safer and resolves the reported sequence item error)
+            df_extracted = df_data.iloc[:, col_indices].copy()
+            df_extracted.columns = list(columns_config.values()) # Assign standardized names (all strings)
 
             # 1. PSum numeric conversion (handle potential commas, coerce errors)
             power_series = df_extracted[PSUM_RAW_NAME].astype(str).str.strip()
             power_series = power_series.str.replace(',', '.', regex=False)
             df_extracted[PSUM_RAW_NAME] = pd.to_numeric(power_series, errors='coerce')
             
-            # 2. Date and Time formatting cleanup (standardize date strings)
-            # infer_datetime_format=True enables robust parsing of various formats including YYYY-MM-DD,
-            # while dayfirst=True maintains the preference for DD/MM/YYYY when the format is ambiguous.
+            # 2. Date and Time formatting cleanup
             df_extracted['Date'] = pd.to_datetime(df_extracted['Date'], errors='coerce', dayfirst=True, infer_datetime_format=True).dt.strftime('%d/%m/%Y')
             df_extracted['Time'] = pd.to_datetime(df_extracted['Time'], errors='coerce').dt.strftime('%H:%M:%S')
 
@@ -95,6 +87,8 @@ def process_uploaded_files(uploaded_files, columns_config, header_index):
 
         except Exception as e:
             st.error(f"Error processing file **{filename}**: {e}")
+            # Add a hint about the header if the error is generic
+            st.warning(f"Hint: Check if the configured header row number ({header_index + 1}) is correct.")
             continue
 
     return processed_data
@@ -231,7 +225,6 @@ def build_output_excel(sheets_dict):
             ws.merge_cells(start_row=merge_start, start_column=col_start, end_row=merge_end, end_column=col_start)
             date_cell = ws.cell(row=merge_start, column=col_start, value=date)
             date_cell.alignment = Alignment(horizontal="center", vertical="center")
-            # Set the number format explicitly to ensure Excel interprets the numeric value as a date
             date_cell.number_format = 'YYYY-MM-DD' 
 
             # Fill data (starts at row 3)
@@ -401,14 +394,26 @@ def app():
     st.title("⚡ Energy Data Pipeline: CSV Consolidation & 10-Min Analysis")
     st.markdown("""
     This application performs a single, two-stage process:
-    1. **Extraction (Stage 1):** Upload raw CSV files. The application extracts **Date**, **Time**, and **PSum (W)** based on the column letters you configure, using **Row 3** (index 2) as the header.
+    1. **Extraction (Stage 1):** Upload raw CSV files. The application extracts **Date**, **Time**, and **PSum (W)** based on the column letters you configure, using the specified row as the header.
     2. **Analysis (Stage 2):** The extracted data is cleaned, resampled to **10-minute intervals**, filtered to the active period (zero readings at start/end are removed), and formatted into a comprehensive Excel report with charts.
     """)
     st.write("---")
 
     # --- Sidebar: Column Configuration (Stage 1 Config) ---
-    st.sidebar.header("⚙️ Raw CSV Column Configuration")
-    st.sidebar.markdown("Specify the column letters for extraction. Data reading starts from **Row 3**.")
+    st.sidebar.header("⚙️ Raw CSV Configuration")
+
+    # New input for Header Row
+    header_row_input = st.sidebar.number_input(
+        "Header Row Number (1-based)", 
+        min_value=1, 
+        value=4, # Default to Row 4 (index 3) as requested
+        step=1, 
+        help="The 1-based row number containing the column headers (e.g., enter 4 for Row 4)."
+    )
+    # Convert 1-based row number to 0-based index
+    header_index = int(header_row_input) - 1
+
+    st.sidebar.markdown(f"Data will be read starting from **Row {header_index + 2}**.")
 
     date_col_str = st.sidebar.text_input("Date Column Letter (Default: A)", value='A')
     time_col_str = st.sidebar.text_input("Time Column Letter (Default: B)", value='B')
@@ -456,11 +461,11 @@ def app():
                 processed_raw_data_dict = process_uploaded_files(
                     uploaded_files, 
                     COLUMNS_TO_EXTRACT, 
-                    HEADER_ROW_INDEX
+                    header_index # Use the dynamic index
                 )
 
                 if not processed_raw_data_dict:
-                    st.error("Stage 1 failed: No files were successfully processed. Check file structure or column letters.")
+                    st.error("Stage 1 failed: No files were successfully processed. Check file structure, column letters, or header row number.")
                     return
 
                 st.success(f"Stage 1 Complete: Consolidated data from {len(processed_raw_data_dict)} file(s).")
@@ -473,7 +478,6 @@ def app():
                 progress_bar = st.progress(0)
                 
                 for i, (sheet_name, df_raw) in enumerate(processed_raw_data_dict.items()):
-                    # Call process_sheet (which now knows the fixed column names)
                     processed_df = process_sheet(df_raw)
                     
                     if not processed_df.empty:
