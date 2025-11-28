@@ -131,8 +131,50 @@ def process_sheet(df, date_col, time_col, psum_col):
     
     return grouped
 
-def build_output_excel(sheets_dict):
-    """Creates the final formatted Excel file with data, charts, and summary."""
+def prepare_chart_data(analysis_results):
+    """
+    Aggregates the daily maximum kW for all sheets into a single DataFrame
+    suitable for Streamlit charting and returns the total_sheet_data dictionary.
+    """
+    total_sheet_data = {}
+    
+    for sheet_name, df in analysis_results.items():
+        # Ensure 'Date' column is converted to datetime.date objects for consistent grouping
+        df['Date'] = pd.to_datetime(df['Date']).dt.date
+        
+        # Get daily max kW for the sheet
+        daily_maxes = df.groupby('Date')['kW'].max().reset_index()
+        
+        for _, row in daily_maxes.iterrows():
+            date = row['Date']
+            max_kw = row['kW']
+            
+            if date not in total_sheet_data:
+                total_sheet_data[date] = {}
+            total_sheet_data[date][sheet_name] = max_kw
+
+    # Convert the dictionary structure to a DataFrame
+    dates = sorted(total_sheet_data.keys())
+    # Create an index with just the dates (not datetime objects)
+    chart_df = pd.DataFrame(index=dates)
+    sheet_names_list = sorted(list(set(sheet for date_data in total_sheet_data.values() for sheet in date_data.keys())))
+    
+    for date in dates:
+        for sheet_name in sheet_names_list:
+            # Fill the DataFrame with the max kW value, or 0 if missing for that day/sheet
+            chart_df.loc[date, sheet_name] = total_sheet_data[date].get(sheet_name, 0)
+
+    # Calculate Total Load column
+    chart_df['Total Load (kW)'] = chart_df[sheet_names_list].sum(axis=1)
+    chart_df.index.name = 'Date'
+    
+    return chart_df, total_sheet_data
+
+def build_output_excel(sheets_dict, total_sheet_data):
+    """
+    Creates the final formatted Excel file with data, charts, and summary, 
+    using the pre-calculated total_sheet_data for the 'Total' sheet.
+    """
     wb = Workbook()
     if 'Sheet' in wb.sheetnames:
         wb.remove(wb['Sheet'])
@@ -142,13 +184,10 @@ def build_output_excel(sheets_dict):
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'),
                               top=Side(style='thin'), bottom=Side(style='thin'))
 
-    # Data structure for the "Total" sheet
-    total_sheet_data = {}
-    sheet_names_list = []
+    sheet_names_list = list(sheets_dict.keys())
 
     for sheet_name, df in sheets_dict.items():
         ws = wb.create_sheet(sheet_name)
-        sheet_names_list.append(sheet_name)
         # Ensure 'Date' column is converted to datetime.date objects for sorting
         df['Date'] = pd.to_datetime(df['Date']).dt.date
         dates = sorted(df["Date"].unique())
@@ -215,11 +254,6 @@ def build_output_excel(sheets_dict):
             max_row_used = max(max_row_used, stats_row_start+2)
             daily_max_summary.append((date_str_short, max_kw)) 
 
-            # Collect data for "Total" sheet
-            if date not in total_sheet_data:
-                total_sheet_data[date] = {}
-            total_sheet_data[date][sheet_name] = max_kw
-
             col_start += 4
 
         # Add Line Chart for Individual Sheet
@@ -272,7 +306,11 @@ def build_output_excel(sheets_dict):
     if total_sheet_data:
         ws_total = wb.create_sheet("Total")
         
-        headers = ["Date"] + sheet_names_list + ["Total Load"]
+        sorted_dates = sorted(total_sheet_data.keys())
+        # Re-derive sheet names list in case sheets_dict was empty for some reason
+        all_sheet_names = sorted(list(set(sheet for date_data in total_sheet_data.values() for sheet in date_data.keys())))
+        
+        headers = ["Date"] + all_sheet_names + ["Total Load"]
         
         for col_idx, header_text in enumerate(headers, 1):
             cell = ws_total.cell(row=1, column=col_idx, value=header_text)
@@ -282,8 +320,6 @@ def build_output_excel(sheets_dict):
             cell.border = thin_border
             ws_total.column_dimensions[get_column_letter(col_idx)].width = 20
 
-        sorted_dates = sorted(total_sheet_data.keys())
-        
         for row_idx, date_obj in enumerate(sorted_dates, 2):
             date_cell = ws_total.cell(row=row_idx, column=1, value=date_obj.strftime('%Y-%m-%d'))
             date_cell.border = thin_border
@@ -291,7 +327,7 @@ def build_output_excel(sheets_dict):
             
             row_total_load = 0
             
-            for col_idx, sheet_name in enumerate(sheet_names_list, 2):
+            for col_idx, sheet_name in enumerate(all_sheet_names, 2):
                 val = total_sheet_data[date_obj].get(sheet_name, 0)
                 if pd.isna(val): val = 0
                 
@@ -300,7 +336,7 @@ def build_output_excel(sheets_dict):
                 cell.border = thin_border
                 row_total_load += val
             
-            total_cell = ws_total.cell(row=row_idx, column=len(sheet_names_list) + 2, value=row_total_load)
+            total_cell = ws_total.cell(row=row_idx, column=len(all_sheet_names) + 2, value=row_total_load)
             total_cell.number_format = numbers.FORMAT_NUMBER_00
             total_cell.border = thin_border
             total_cell.font = Font(bold=True)
@@ -308,7 +344,7 @@ def build_output_excel(sheets_dict):
         # Add Chart to Total Sheet
         if sorted_dates:
             chart_total = LineChart()
-            chart_total.title = "Overview" 
+            chart_total.title = "Daily Max Load Overview" 
             chart_total.y_axis.title = "Max Power (kW)"
             chart_total.x_axis.title = "Date"
             
@@ -316,8 +352,9 @@ def build_output_excel(sheets_dict):
             chart_total.width = 30
             
             data_max_row = len(sorted_dates) + 1
-            total_cols = len(sheet_names_list) + 2
+            total_cols = len(all_sheet_names) + 2
             
+            # Data from all sheets + Total Load column
             data_ref = Reference(ws_total, min_col=2, min_row=1, max_col=total_cols, max_row=data_max_row)
             chart_total.add_data(data_ref, titles_from_data=True)
 
@@ -584,11 +621,21 @@ def app():
                     st.warning(f"Sheet '{sheet_name}' yielded no usable data after 10-minute processing.")
 
             if analysis_results:
-                st.success(f"Analysis complete! Generating Excel report with data for {total_processed_days} day(s) across {len(analysis_results)} sheet(s).")
+                
+                # 1. Prepare Chart Data for Streamlit and Excel Total Sheet
+                chart_data_df, total_sheet_data = prepare_chart_data(analysis_results)
+                
+                # 2. Display Chart in Streamlit
+                st.header("Daily Max Load Overview (Total Sheet Graph)")
+                st.line_chart(chart_data_df, use_container_width=True)
+                st.dataframe(chart_data_df) # Optional: show the underlying data
+
+                # 3. Generate Excel
+                output_stream = build_output_excel(analysis_results, total_sheet_data)
+                
+                st.success(f"Analysis complete! Generated report with data for {total_processed_days} day(s) across {len(analysis_results)} sheet(s).")
                 st.balloons()
                 
-                output_stream = build_output_excel(analysis_results)
-
                 # Generate output filename for analysis data
                 default_analysis_filename = "10Min_Power_Analysis_Report.xlsx"
                 
