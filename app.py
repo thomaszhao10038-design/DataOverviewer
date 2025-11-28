@@ -34,7 +34,8 @@ def sniff_delimiter(file_content_str):
     """
     try:
         # Use csv.Sniffer to guess the dialect (including the delimiter)
-        dialect = csv.Sniffer().sniff(file_content_str[:4096]) # Check first 4KB
+        # Check first 4KB (4096 bytes)
+        dialect = csv.Sniffer().sniff(file_content_str[:4096]) 
         return dialect.delimiter
     except csv.Error:
         # Fallback to comma if sniffing fails
@@ -44,7 +45,7 @@ def sniff_delimiter(file_content_str):
 def process_uploaded_files(uploaded_files, columns_config, header_index):
     """
     Reads CSVs, extracts Date, Time, and PSum columns, and consolidates.
-    Includes robust delimiter detection.
+    Includes robust encoding and iterative delimiter detection.
     Returns a dictionary of raw dataframes with standardized column names.
     """
     processed_data = {}
@@ -58,27 +59,66 @@ def process_uploaded_files(uploaded_files, columns_config, header_index):
         filename = uploaded_file.name
         
         try:
-            # 1. Read the file content into a string buffer first
-            # We assume ISO-8859-1 for broad compatibility with typical logger exports
+            # 1. Read the file content into a string buffer, attempting UTF-8 first
             file_content_bytes = uploaded_file.getvalue()
-            file_content_str = file_content_bytes.decode('ISO-8859-1')
-            
+            try:
+                # Attempt standard UTF-8 decoding
+                file_content_str = file_content_bytes.decode('utf-8')
+                st.info(f"File **{filename}**: Used UTF-8 encoding.")
+                encoding_used = 'utf-8'
+            except UnicodeDecodeError:
+                # Fallback to common logger encoding
+                file_content_str = file_content_bytes.decode('ISO-8859-1')
+                st.warning(f"File **{filename}**: UTF-8 failed, used ISO-8859-1 encoding.")
+                encoding_used = 'ISO-8859-1'
+
             # 2. Sniff the delimiter
             detected_delimiter = sniff_delimiter(file_content_str)
             
-            st.info(f"File **{filename}**: Detected delimiter: `{detected_delimiter}`")
+            st.info(f"File **{filename}**: Sniffed delimiter: `{detected_delimiter}`.")
 
-            # 3. Use the content string buffer and the detected delimiter for reading
-            file_buffer = StringIO(file_content_str)
+            # 3. Iterative Reading Attempt with Delimiter Fallback
+            read_success = False
+            df_full = pd.DataFrame() # Initialize outside the loop
             
-            # Read CSV using the detected delimiter and header=None
-            df_full = pd.read_csv(
-                file_buffer, 
-                sep=detected_delimiter, # Use the robustly detected delimiter
-                header=None, 
-                low_memory=False
-            )
+            # Prioritized list of delimiters to try: Sniffed, Semicolon (European), Comma (Standard)
+            delimiters_to_try = [detected_delimiter, ';', ',']
+            
+            for delimiter_to_try in delimiters_to_try:
+                if not delimiter_to_try or delimiter_to_try == '\n': continue
 
+                try:
+                    # Reset buffer position for each read attempt
+                    file_buffer = StringIO(file_content_str)
+                    
+                    df_attempt = pd.read_csv(
+                        file_buffer, 
+                        sep=delimiter_to_try, 
+                        header=None, 
+                        low_memory=False
+                    )
+                    
+                    # Heuristic check: Ensure DataFrame is not empty and has enough columns
+                    if not df_attempt.empty and df_attempt.shape[1] > max(columns_config.keys()):
+                        df_full = df_attempt
+                        st.success(f"File **{filename}** successfully read using delimiter: `{delimiter_to_try}`.")
+                        read_success = True
+                        break # Success, move to the next step
+                    
+                except pd.errors.ParserError:
+                    # Parsing failed, try the next delimiter
+                    pass
+                except Exception as e:
+                    # Other exceptions (e.g., ValueError)
+                    pass
+
+
+            if not read_success:
+                st.error(f"File **{filename}** could not be parsed after trying all fallbacks (`{detected_delimiter}`, `;`, `,`) using {encoding_used}. Please check the file's encoding and structure.")
+                continue # Skip to the next file
+            
+            # --- Data Processing (Continues only if read_success is True) ---
+            
             # Assign header names from the target row
             header_row = df_full.iloc[header_index].astype(str)
             df_full.columns = header_row
@@ -106,7 +146,7 @@ def process_uploaded_files(uploaded_files, columns_config, header_index):
             processed_data[sheet_name] = df_final
 
         except Exception as e:
-            st.error(f"Error processing file **{filename}**: {e}")
+            st.error(f"Critical error during processing of file **{filename}**: {e}")
             continue
 
     return processed_data
@@ -245,7 +285,6 @@ def build_output_excel(sheets_dict):
             date_cell.alignment = Alignment(horizontal="center", vertical="center")
             # Set the number format explicitly to ensure Excel interprets the numeric value as a date
             date_cell.number_format = 'YYYY-MM-DD'  
-            # END OF USER-REQUESTED CHANGE
 
             # Fill data (starts at row 3)
             for idx, r in enumerate(day_data_full.itertuples(), start=merge_start):
@@ -417,7 +456,7 @@ def app():
     1. **Extraction (Stage 1):** Upload raw CSV files. The application extracts **Date**, **Time**, and **PSum (W)** based on the column letters you configure, using **Row 3** (index 2) as the header.
     2. **Analysis (Stage 2):** The extracted data is cleaned, resampled to **10-minute intervals**, filtered to the active period (zero readings at start/end are removed), and formatted into a comprehensive Excel report with charts.
     
-    ***The app now automatically detects the delimiter (comma, semicolon, tab, pipe, etc.) in your CSV files.***
+    ***The app now automatically tries UTF-8, then falls back to ISO-8859-1 encoding, and uses iterative fallback for delimiters (Sniffed, semicolon, then comma) to ensure maximum compatibility.***
     """)
     st.write("---")
 
@@ -465,7 +504,7 @@ def app():
             # Use a spinner to show activity
             with st.spinner("Processing files... This may take a moment."):
                 
-                st.info("Starting Stage 1: Consolidating and cleaning raw data with auto-delimiter detection...")
+                st.info("Starting Stage 1: Consolidating and cleaning raw data with robust parsing...")
                 
                 # 1. STAGE 1: Consolidation
                 processed_raw_data_dict = process_uploaded_files(
