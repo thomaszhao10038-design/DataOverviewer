@@ -387,6 +387,11 @@ def process_uploaded_files(uploaded_files, file_configs):
     
     for i, uploaded_file in enumerate(uploaded_files):
         filename = uploaded_file.name
+        # Ensure the index i is valid for file_configs before proceeding
+        if i >= len(file_configs):
+             st.error(f"Internal error: Configuration for file index {i} is missing. Please re-run the script.")
+             continue
+
         config = file_configs[i] 
         
         try:
@@ -545,14 +550,44 @@ def app():
         accept_multiple_files=True
     )
     
-    file_configs = []
+    # Initialize file_configs here. It must be populated based on user input 
+    # before any action (like quick_download_process) uses it.
+    file_configs = [] 
     
-    # --- Sidebar Configuration & One-click Action (New Location) ---
+    # --- Sidebar Configuration & One-click Action ---
     with st.sidebar:
         st.header("⚙️ Individual File Configuration")
         
         if uploaded_files:
-            # --- ONE-CLICK DOWNLOAD (The primary action, now in sidebar) ---
+            st.warning("Verify the settings below for **each** uploaded file. Defaults are based on common MSB reports.")
+            
+            # --- 1. BUILD CONFIGURATION LIST (MUST RUN before the button logic) ---
+            for i, uploaded_file in enumerate(uploaded_files):
+                
+                with st.expander(f"**{uploaded_file.name}**", expanded=i == 0):
+                    
+                    # Column Configuration
+                    st.subheader("Column Letters")
+                    date_col_str = st.text_input("Date Column Letter", value='A', key=f'date_col_str_{i}')
+                    time_col_str = st.text_input("Time Column Letter", value='B', key=f'time_col_str_{i}')
+                    ps_um_col_str = st.text_input("PSum Column Letter", value='BI', key=f'psum_col_str_{i}', help="PSum (Total Active Power) column letter in this file (e.g., 'BI').")
+
+                    # CSV File Settings
+                    st.subheader("CSV File Parsing")
+                    delimiter_input = st.text_input("CSV Delimiter (Separator)", value=',', key=f'delimiter_input_{i}', help="The character used to separate values (e.g., ',', ';', or '\\t').")
+                    start_row_num = st.number_input("Header Row Number", min_value=1, value=3, key=f'start_row_num_{i}', help="The row number that contains the column headers.")
+                    selected_date_format = st.selectbox("Date Format for Parsing", options=["DD/MM/YYYY", "YYYY-MM-DD"], index=0, key=f'selected_date_format_{i}')
+                    
+                    config = {
+                        'date_col_str': date_col_str, 'time_col_str': time_col_str, 'psum_col_str': ps_um_col_str,
+                        'delimiter_input': delimiter_input, 'start_row_num': start_row_num, 
+                        'selected_date_format': selected_date_format,
+                    }
+                    file_configs.append(config)
+                    
+            st.markdown("---") # Separator before file config details
+            
+            # --- 2. ONE-CLICK DOWNLOAD (The primary action, uses the populated file_configs) ---
             with st.container(border=True):
                 st.subheader("🎯 One-click Analysis")
                 st.markdown("Fully automate both steps: Extract, consolidate, analyze, and download the final 10-minute report.")
@@ -560,9 +595,11 @@ def app():
                 # Use st.empty() for status message in the sidebar
                 quick_status_placeholder = st.empty() 
 
+                # The button is now aware of the populated file_configs list
                 if st.button("⚡ Quick Download Final Report", type="primary", use_container_width=True, key='sidebar_quick_analysis_button'):
                     quick_status_placeholder.info("Starting One-click Analysis process...")
                     
+                    # file_configs is guaranteed to be populated here if uploaded_files is not empty
                     final_excel_stream = quick_download_process(uploaded_files, file_configs)
                     
                     if final_excel_stream:
@@ -588,32 +625,6 @@ def app():
                     else:
                         quick_status_placeholder.error("One-click Analysis failed. Please check file formats and sidebar configurations.")
 
-            st.markdown("---") # Separator before file config details
-
-            st.warning("Verify the settings below for **each** uploaded file. Defaults are based on common MSB reports.")
-            
-            for i, uploaded_file in enumerate(uploaded_files):
-                
-                with st.expander(f"**{uploaded_file.name}**", expanded=i == 0):
-                    
-                    # Column Configuration
-                    st.subheader("Column Letters")
-                    date_col_str = st.text_input("Date Column Letter", value='A', key=f'date_col_str_{i}')
-                    time_col_str = st.text_input("Time Column Letter", value='B', key=f'time_col_str_{i}')
-                    ps_um_col_str = st.text_input("PSum Column Letter", value='BI', key=f'psum_col_str_{i}', help="PSum (Total Active Power) column letter in this file (e.g., 'BI').")
-
-                    # CSV File Settings
-                    st.subheader("CSV File Parsing")
-                    delimiter_input = st.text_input("CSV Delimiter (Separator)", value=',', key=f'delimiter_input_{i}', help="The character used to separate values (e.g., ',', ';', or '\\t').")
-                    start_row_num = st.number_input("Header Row Number", min_value=1, value=3, key=f'start_row_num_{i}', help="The row number that contains the column headers.")
-                    selected_date_format = st.selectbox("Date Format for Parsing", options=["DD/MM/YYYY", "YYYY-MM-DD"], index=0, key=f'selected_date_format_{i}')
-                    
-                    config = {
-                        'date_col_str': date_col_str, 'time_col_str': time_col_str, 'psum_col_str': ps_um_col_str,
-                        'delimiter_input': delimiter_input, 'start_row_num': start_row_num, 
-                        'selected_date_format': selected_date_format,
-                    }
-                    file_configs.append(config)
         else:
             st.info("Upload files to see configuration settings here.")
 
@@ -630,6 +641,7 @@ def app():
             
             # --- Stage 1: Consolidate Raw Data ---
             if st.button("1. Consolidate Raw Data (Extract/Prepare)", type="primary", help="Reads files, extracts configured columns, and prepares data for 10-minute analysis.", use_container_width=True):
+                # Use the file_configs list populated in the sidebar
                 processed_data_dict = process_uploaded_files(uploaded_files, file_configs)
                 
                 if processed_data_dict:
