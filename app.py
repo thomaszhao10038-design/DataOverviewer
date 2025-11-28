@@ -507,11 +507,10 @@ def to_excel_consolidation(data_dict):
 def app():
     st.set_page_config(layout="wide", page_title="EnergyAnalyser Pro")
     
-    # --- Title Change Here ---
     st.title("⚡ DataAnalyser Pro for MSB")
     
     st.markdown("""
-        ### **Stage 1: CSV Data Consolidation (from Code 1)**
+        ### **Stage 1: CSV Data Consolidation (Extraction)**
         Upload your raw energy data CSV files to extract **Date**, **Time**, and **PSum** and consolidate them into a single Excel file.
     """)
 
@@ -554,7 +553,8 @@ def app():
                 }
                 file_configs.append(config)
                 
-        if st.button("🚀 Process & Consolidate Files"):
+        # --- Stage 1 Button (Primary/Green) ---
+        if st.button("1. Consolidate Raw Data", type="primary"):
             processed_data_dict = process_uploaded_files(uploaded_files, file_configs)
             
             if processed_data_dict:
@@ -596,7 +596,7 @@ def app():
     # --- Stage 2: 10-Minute Power Analysis (from Code 2) ---
     st.markdown("""
         ---
-        ### **Stage 2: 10-Minute Power Analysis (from Code 2)**
+        ### **Stage 2: 10-Minute Power Analysis (Aggregation)**
         Run the 10-minute interval and max power analysis on the **consolidated data** generated in Stage 1.
     """)
 
@@ -604,7 +604,8 @@ def app():
         
         st.info(f"Ready to analyze {len(st.session_state['consolidated_data'])} sheet(s) of consolidated data.")
         
-        if st.button("📈 Run 10-Minute Analysis & Generate Excel"):
+        # --- Stage 2 Button (Primary/Green) ---
+        if st.button("2. Run 10-Minute Analysis", type="primary"):
             st.write("Processing data for 10-minute intervals...")
             analysis_results = {}
             total_processed_days = 0
@@ -628,7 +629,7 @@ def app():
                 # 2. Display Chart in Streamlit
                 st.header("Daily Max Load Overview (Total Sheet Graph)")
                 st.line_chart(chart_data_df, use_container_width=True)
-                st.dataframe(chart_data_df) # Optional: show the underlying data
+                st.markdown("---") # Separator for clarity
 
                 # 3. Generate Excel
                 output_stream = build_output_excel(analysis_results, total_sheet_data)
