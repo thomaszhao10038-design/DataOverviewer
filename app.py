@@ -9,6 +9,7 @@ from openpyxl.utils import get_column_letter
 import datetime
 
 # --- Configuration & Constants ---
+# PSUM_RAW_NAME and POWER_COL_OUT remain constants for internal standardization
 PSUM_RAW_NAME = 'PSum (W)'      # Name used after extraction from CSV
 POWER_COL_OUT = 'PSumW'         # Name used after 10-min aggregation and in Excel
 
@@ -21,78 +22,58 @@ def excel_col_to_index(col_str):
         if 'A' <= char <= 'Z':
             index = index * 26 + (ord(char) - ord('A') + 1)
         else:
+            # Added error detail for robustness
             raise ValueError(f"Invalid character in column string: {col_str}")
     return index - 1
 
 # --- Stage 1: Process CSV Files (Extraction and Clean up) ---
-def process_uploaded_files(file_configs):
+# Function now accepts a list of file_config dictionaries
+def process_uploaded_files(file_configs, header_index):
     """
-    Reads CSVs, extracts Date, Time, and PSum columns based on file-specific configuration, 
-    and consolidates.
+    Reads CSVs based on per-file configuration, extracts Date, Time, and PSum columns, 
+    and consolidates. Returns a dictionary of raw dataframes with standardized 
+    column names.
     """
     processed_data = {}
 
     for config in file_configs:
         uploaded_file = config['file']
-        header_index = config['header_index']
         columns_config = config['columns_config']
-        date_format = config['date_format']
+        date_format = config['date_format'] # e.g., 'DD/MM/YYYY'
+        
+        # Determine dayfirst flag for pandas based on user selection
+        day_first_flag = date_format == 'DD/MM/YYYY'
 
         filename = uploaded_file.name
-        st.info(f"Processing **{filename}**...")
-        
         col_indices = list(columns_config.keys())
         
-        if len(set(col_indices)) != 3:
-            st.error(f"Error in {filename}: Date, Time, and PSum must come from three unique columns.")
-            continue
-
         try:
-            # Read CSV with no header initially (header=None). Columns are 0, 1, 2, ...
-            # Using low_memory=False to help with mixed types
-            df_full = pd.read_csv(uploaded_file, header=None, encoding='ISO-8859-1', low_memory=False, sep=';')
+            # Read CSV (using header index)
+            df_full = pd.read_csv(uploaded_file, header=None, encoding='ISO-8859-1', low_memory=False)
 
-            # Data rows start from the row *after* the header row index.
-            if header_index < 0 or header_index >= len(df_full):
-                st.error(f"Error processing file **{filename}**: Configured Header Row (Index {header_index + 1}) is out of bounds for this file.")
-                continue
-
-            # df_data contains only the rows that should be processed as data (everything after the header row).
-            df_data = df_full.iloc[header_index + 1:].reset_index(drop=True)
+            # Assign header names from the target row (header_index is 0-based)
+            header_row = df_full.iloc[header_index].astype(str)
+            df_full.columns = header_row
             
-            # Get the maximum number of columns available in the data
-            max_cols = df_data.shape[1]
-            
-            # Check if requested indices are valid
-            invalid_indices = [idx for idx in col_indices if idx >= max_cols]
-            if invalid_indices:
-                last_col_letter = get_column_letter(max_cols)
-                config_letters = ', '.join(get_column_letter(idx + 1) for idx in invalid_indices)
-                st.error(f"Error processing file **{filename}**: Columns {config_letters} are out-of-bounds.")
-                st.error(f"The file only contains {max_cols} columns (up to column **{last_col_letter}**).")
-                continue # Skip to the next file
+            # Start data from row index + 1
+            df_full = df_full[header_index + 1:].reset_index(drop=True)
 
-            # Extract columns by integer index 
-            df_extracted = df_data.iloc[:, col_indices].copy()
-            df_extracted.columns = list(columns_config.values()) # Assign standardized names (all strings)
+            # Extract columns based on 0-based indices from config
+            df_extracted = df_full.iloc[:, col_indices].copy()
+            df_extracted.columns = list(columns_config.values()) # Assign standardized names
 
             # 1. PSum numeric conversion (handle potential commas, coerce errors)
             power_series = df_extracted[PSUM_RAW_NAME].astype(str).str.strip()
             power_series = power_series.str.replace(',', '.', regex=False)
             df_extracted[PSUM_RAW_NAME] = pd.to_numeric(power_series, errors='coerce')
             
-            # Get date parsing parameter
-            dayfirst = (date_format == "DD/MM/YYYY")
-
-            # 2. Date and Time formatting cleanup
-            # Parse date using the selected format
+            # 2. Date and Time formatting cleanup (standardize date strings)
+            # Use dayfirst based on user configuration
             df_extracted['Date'] = pd.to_datetime(
                 df_extracted['Date'], 
                 errors='coerce', 
-                dayfirst=dayfirst, 
-                infer_datetime_format=True
+                dayfirst=day_first_flag
             ).dt.strftime('%d/%m/%Y')
-            
             df_extracted['Time'] = pd.to_datetime(df_extracted['Time'], errors='coerce').dt.strftime('%H:%M:%S')
 
             df_final = df_extracted[['Date', 'Time', PSUM_RAW_NAME]].copy()
@@ -102,7 +83,7 @@ def process_uploaded_files(file_configs):
             processed_data[sheet_name] = df_final
 
         except Exception as e:
-            st.error(f"An unexpected error occurred while processing file **{filename}**: {e}")
+            st.error(f"Error processing file **{filename}**: {e}")
             continue
 
     return processed_data
@@ -133,7 +114,7 @@ def process_sheet(df):
     non_zero_indices = df[df[POWER_COL_OUT].abs() != 0].index
     
     if non_zero_indices.empty:
-        return pd.DataFrame() 
+        return pd.DataFrame()
         
     first_valid_idx = non_zero_indices.min()
     last_valid_idx = non_zero_indices.max()
@@ -197,7 +178,7 @@ def build_output_excel(sheets_dict):
     header_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')
     title_font = Font(bold=True, size=12)
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'),
-                                 top=Side(style='thin'), bottom=Side(style='thin'))
+                              top=Side(style='thin'), bottom=Side(style='thin'))
 
     total_sheet_data = {}
     sheet_names_list = []
@@ -210,7 +191,7 @@ def build_output_excel(sheets_dict):
         max_row_used = 0
         daily_max_summary = []
         day_intervals = []
-        
+            
         for date in dates:
             day_data_full = df[df["Date"] == date].sort_values("Time")
             day_data_active = day_data_full.dropna(subset=[POWER_COL_OUT])
@@ -235,10 +216,11 @@ def build_output_excel(sheets_dict):
             ws.cell(row=2, column=col_start+2, value="Active Power (W)")
             ws.cell(row=2, column=col_start+3, value="kW")
 
-            # Merge UTC column (Starts at row 3). The value is the date object.
+            # Merge UTC column
             ws.merge_cells(start_row=merge_start, start_column=col_start, end_row=merge_end, end_column=col_start)
             date_cell = ws.cell(row=merge_start, column=col_start, value=date)
             date_cell.alignment = Alignment(horizontal="center", vertical="center")
+            # Set the number format explicitly to ensure Excel interprets the numeric value as a date
             date_cell.number_format = 'YYYY-MM-DD' 
 
             # Fill data (starts at row 3)
@@ -269,10 +251,10 @@ def build_output_excel(sheets_dict):
             max_row_used = max(max_row_used, stats_row_start+2)
             daily_max_summary.append((date_str_short, max_kw)) 
 
-            # Collect data for "Total" sheet
-            if date not in total_sheet_data:
-                total_sheet_data[date] = {}
-            total_sheet_data[date][sheet_name] = max_kw
+            # Apply border to all cells written in the current column group (data + stats)
+            for r in range(1, max_row_used + 1):
+                for c in range(col_start, col_start + 4):
+                    ws.cell(row=r, column=c).border = thin_border
 
             col_start += 4
 
@@ -324,10 +306,10 @@ def build_output_excel(sheets_dict):
     # -----------------------------
     if total_sheet_data:
         ws_total = wb.create_sheet("Total")
-        
+            
         # Prepare Headers
         headers = ["Date"] + sheet_names_list + ["Total Load"]
-        
+            
         # Write Headers
         for col_idx, header_text in enumerate(headers, 1):
             cell = ws_total.cell(row=1, column=col_idx, value=header_text)
@@ -339,7 +321,7 @@ def build_output_excel(sheets_dict):
 
         # Write Data
         sorted_dates = sorted(total_sheet_data.keys())
-        
+            
         for row_idx, date_obj in enumerate(sorted_dates, 2):
             # Applying date format here too, just in case
             date_cell = ws_total.cell(row=row_idx, column=1, value=date_obj)
@@ -395,7 +377,7 @@ def build_output_excel(sheets_dict):
     stream = BytesIO()
     if 'Sheet' in wb.sheetnames:
         wb.remove(wb['Sheet'])
-        
+            
     wb.save(stream)
     stream.seek(0)
     return stream
@@ -407,18 +389,49 @@ def app():
     
     st.title("⚡ Energy Data Pipeline: CSV Consolidation & 10-Min Analysis")
     st.markdown("""
-    This application performs a single, two-stage process:
-    1. **Extraction (Stage 1):** Upload raw CSV files. You can configure the **Header Row**, **Column Letters**, and **Date Format** for *each* file individually below.
-    2. **Analysis (Stage 2):** The extracted data is cleaned, resampled to **10-minute intervals**, filtered to the active period, and formatted into an Excel report with charts.
+    This application processes raw energy CSV data:
+    1. **Extraction (Stage 1):** Extracts Date, Time, and PSum (W) based on per-file configuration.
+    2. **Analysis (Stage 2):** Resamples data to **10-minute intervals**, filters to the active period (removing leading/trailing zero readings), and generates an Excel report with daily charts and a summary sheet.
     """)
     st.write("---")
 
-    # --- File Upload ---
+    # --- Sidebar: Global Configuration and Defaults ---
+    st.sidebar.header("⚙️ Global Settings")
+    
+    # 1. New global input for header row index (Row 4 = index 3)
+    header_row_number = st.sidebar.number_input(
+        "Data reading starts from Row:", 
+        min_value=1, 
+        value=4, 
+        step=1, 
+        help="Row number (1-based) containing column headers. Default is Row 4 (index 3)."
+    )
+    # Convert to 0-based index
+    header_index = header_row_number - 1 
+
+    st.sidebar.markdown("---")
+    st.sidebar.header("📝 Default Column Settings")
+    st.sidebar.markdown("These values are used as defaults for all files.")
+
+    # Defaults for column letters
+    date_col_default = st.sidebar.text_input("Default Date Column Letter:", value='A')
+    time_col_default = st.sidebar.text_input("Default Time Column Letter:", value='B')
+    ps_um_col_default = st.sidebar.text_input("Default PSum Column Letter:", value='BI')
+    
+    # Default for date format
+    date_format_default = st.sidebar.selectbox(
+        "Default Date Format:", 
+        ['DD/MM/YYYY', 'YYYY-MM-DD'], 
+        index=0,
+        help="Choose the format matching the date column in your raw CSV files."
+    )
+    
+    st.write("---")
+    # --- Main Area: File Upload ---
     uploaded_files = st.file_uploader(
         "Upload Raw CSV files (Max 10)", 
         type=['csv'], 
-        accept_multiple_files=True,
-        key="file_uploader"
+        accept_multiple_files=True
     )
     if uploaded_files and len(uploaded_files) > 10:
         st.warning(f"You uploaded {len(uploaded_files)} files. Only the first 10 will be processed.")
@@ -426,92 +439,75 @@ def app():
     
     st.write("---")
 
-    # --- Stage 1: Dynamic Configuration per File ---
+    # --- Per-File Configuration ---
     file_configs = []
+    
     if uploaded_files:
-        st.header("Stage 1: Per-File Configuration")
+        st.subheader("Individual File Configuration (Override Defaults)")
         
-        col1, col2, col3, col4 = st.columns(4)
-        col1.markdown("**File Name**")
-        col2.markdown("**Data Reading Starts From**")
-        col3.markdown("**Column Letters (D/T/P)**")
-        col4.markdown("**Date Format**")
-
-
-        for i, file in enumerate(uploaded_files):
-            with st.expander(f"Settings for: **{file.name}**", expanded=False):
-                config_cols = st.columns(4)
+        # Collect configurations for each file
+        for i, uploaded_file in enumerate(uploaded_files):
+            # Use st.expander for clean layout
+            with st.expander(f"Configuring: **{uploaded_file.name}**", expanded=(i == 0)):
                 
-                # 1. Header Row Input
-                header_row_input = config_cols[0].number_input(
-                    "Header Row Number (1-based)", 
-                    min_value=1, 
-                    value=4, # Default to Row 4 (index 3) as requested
-                    step=1, 
-                    key=f"header_row_{i}",
-                    label_visibility="collapsed",
-                    help="The row number containing the column headers (e.g., enter 4 for Row 4)."
-                )
-                header_index = int(header_row_input) - 1 # Convert to 0-based index
+                st.markdown("Use the defaults from the sidebar, or override them below.")
 
-                # Display the 'Data reading starts from' information
-                config_cols[1].markdown(f"Data starts from **Row {header_index + 2}**")
-
-                # 2. Column Letters Input
-                date_col_str = config_cols[2].text_input("Date Col (A)", value='A', key=f"date_col_{i}", label_visibility="collapsed")
-                time_col_str = config_cols[2].text_input("Time Col (B)", value='B', key=f"time_col_{i}", label_visibility="collapsed")
-                ps_um_col_str = config_cols[2].text_input("PSum Col (BI)", value='BI', key=f"ps_um_col_{i}", label_visibility="collapsed")
-
-                # 3. Date Format Selector
-                date_format = config_cols[3].selectbox(
-                    "Date Format", 
-                    ["DD/MM/YYYY", "YYYY-MM-DD"], 
-                    index=0, 
-                    key=f"date_format_{i}",
-                    label_visibility="collapsed",
-                    help="Select the format used in the Date column of this CSV."
+                # Per-file overrides/settings
+                file_date_col = st.text_input("Date Column Letter:", value=date_col_default, key=f"date_col_{i}")
+                file_time_col = st.text_input("Time Column Letter:", value=time_col_default, key=f"time_col_{i}")
+                file_psum_col = st.text_input("PSum Column Letter (W):", value=ps_um_col_default, key=f"psum_col_{i}")
+                file_date_format = st.selectbox(
+                    "Date Format in File:", 
+                    ['DD/MM/YYYY', 'YYYY-MM-DD'], 
+                    index=(0 if date_format_default == 'DD/MM/YYYY' else 1), 
+                    key=f"date_format_{i}"
                 )
 
-                # Store configuration
                 try:
-                    date_col_index = excel_col_to_index(date_col_str)
-                    time_col_index = excel_col_to_index(time_col_str)
-                    ps_um_col_index = excel_col_to_index(ps_um_col_str)
-
-                    columns_to_extract = {
-                        date_col_index: 'Date',
-                        time_col_index: 'Time',
-                        ps_um_col_index: PSUM_RAW_NAME
+                    # Convert letters to 0-based indices for the processor
+                    col_indices = {
+                        excel_col_to_index(file_date_col): 'Date',
+                        excel_col_to_index(file_time_col): 'Time',
+                        excel_col_to_index(file_psum_col): PSUM_RAW_NAME
                     }
 
+                    # Basic validation check
+                    if len(set(col_indices.keys())) != 3:
+                        st.error(f"File {uploaded_file.name}: Date, Time, and PSum columns must be unique.")
+                        continue
+                    
+                    # Store the complete configuration for this file
                     file_configs.append({
-                        'file': file,
-                        'header_index': header_index,
-                        'columns_config': columns_to_extract,
-                        'date_format': date_format
+                        'file': uploaded_file,
+                        'columns_config': col_indices,
+                        'date_format': file_date_format
                     })
+
                 except ValueError as e:
-                    st.error(f"Configuration Error for {file.name}: {e}. Please correct the column letters.")
-                    return
+                    st.error(f"Configuration Error for {uploaded_file.name}: {e}. Please check the column letters.")
+        
+        st.write("---")
 
     # --- Execution Button ---
-    if file_configs:
-        st.write("---")
-        if st.button(f"🚀 Run Full Pipeline on {len(file_configs)} Configured File(s)"):
+    if file_configs: # Check if any valid configurations were gathered
+        if st.button(f"🚀 Run Full Pipeline on {len(file_configs)} Valid File(s)"):
             
             # Use a spinner to show activity
             with st.spinner("Processing files... This may take a moment."):
                 
-                st.subheader("Process Log:")
+                st.info("Starting Stage 1: Consolidating and cleaning raw data...")
                 
-                # 1. STAGE 1: Consolidation
-                processed_raw_data_dict = process_uploaded_files(file_configs)
+                # 1. STAGE 1: Consolidation - Pass file_configs and the global header index
+                processed_raw_data_dict = process_uploaded_files(
+                    file_configs, 
+                    header_index 
+                )
 
                 if not processed_raw_data_dict:
-                    st.error("Stage 1 failed: No files were successfully processed. Review your configurations above.")
+                    st.error("Stage 1 failed: No files were successfully processed. Check file structure, column letters, or date format.")
                     return
 
-                st.success(f"Stage 1 Complete: Consolidated raw data from {len(processed_raw_data_dict)} file(s).")
+                st.success(f"Stage 1 Complete: Consolidated data from {len(processed_raw_data_dict)} file(s).")
                 st.info("Starting Stage 2: 10-Minute Resampling and Analysis...")
 
                 # 2. STAGE 2: Analysis (10-min resampling and filtering)
@@ -521,6 +517,7 @@ def app():
                 progress_bar = st.progress(0)
                 
                 for i, (sheet_name, df_raw) in enumerate(processed_raw_data_dict.items()):
+                    # Call process_sheet (which now knows the fixed column names)
                     processed_df = process_sheet(df_raw)
                     
                     if not processed_df.empty:
@@ -531,7 +528,7 @@ def app():
                 progress_bar.empty()
 
                 if not final_processed_data_dict:
-                    st.error("Stage 2 failed: No usable data found after 10-minute resampling and zero-filtering.")
+                    st.error("Stage 2 failed: No usable data found after 10-minute resampling and zero-filtering. Data might be entirely zero or contain too many errors.")
                     return
                 
                 st.success(f"Stage 2 Complete: Analyzed and prepared data for {len(final_processed_data_dict)} sheet(s).")
