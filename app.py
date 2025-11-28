@@ -409,6 +409,7 @@ def process_uploaded_files(uploaded_files, file_configs):
             date_format_string = DATE_FORMAT_MAP.get(config['selected_date_format'])
             separator = config['delimiter_input']
             
+            uploaded_file.seek(0) # Reset file pointer for reading
             df_full = pd.read_csv(
                 uploaded_file, 
                 header=header_index, 
@@ -492,12 +493,43 @@ def to_excel_consolidation(data_dict):
                 if 'Time' in df.columns:
                     time_col_index = df.columns.get_loc('Time')
                     worksheet.set_column(time_col_index, time_col_index, 10, text_format)
-            except Exception as e:
-                # print(f"Error applying explicit xlsxwriter formats: {e}") # Suppress console output in final app
+            except Exception:
                 pass
             
     output.seek(0)
     return output.getvalue()
+
+def quick_download_process(uploaded_files, file_configs):
+    """Handles the auto-run of both stages and returns the final analysis Excel stream."""
+    
+    # Stage 1: Process and Consolidate
+    processed_data_dict = process_uploaded_files(uploaded_files, file_configs)
+
+    if not processed_data_dict:
+        return None
+
+    # Stage 2: 10-Minute Analysis
+    analysis_results = {}
+    
+    for sheet_name, df_raw in processed_data_dict.items():
+        # Ensure file pointer is reset before processing multiple times
+        for uploaded_file in uploaded_files:
+            uploaded_file.seek(0) 
+
+        processed_df = process_sheet(df_raw, 'Date', 'Time', PSUM_OUTPUT_NAME)
+        if not processed_df.empty:
+            analysis_results[sheet_name] = processed_df
+
+    if not analysis_results:
+        return None
+        
+    # Prepare data for Total sheet and chart generation
+    _, total_sheet_data = prepare_chart_data(analysis_results)
+    
+    # Build and return the final Excel file stream
+    output_stream = build_output_excel(analysis_results, total_sheet_data)
+    
+    return output_stream
 
 
 # -------------------------------------
@@ -509,151 +541,188 @@ def app():
     
     st.title("⚡ DataAnalyser Pro for MSB")
     
-    st.markdown("""
-        ### **Stage 1: CSV Data Consolidation (Extraction)**
-        Upload your raw energy data CSV files to extract **Date**, **Time**, and **PSum** and consolidate them into a single Excel file.
-    """)
-
-    # --- Stage 1: Upload and Configuration (from Code 1) ---
+    # --- File Upload Section (Always at the top) ---
+    st.markdown("### ⬆️ Upload Raw Data")
     uploaded_files = st.file_uploader(
         "Choose up to 10 CSV files", 
         type=["csv"], 
         accept_multiple_files=True
     )
     
-    if uploaded_files and len(uploaded_files) > 10:
-        st.warning(f"You have uploaded {len(uploaded_files)} files. Only the first 10 will be processed.")
-        uploaded_files = uploaded_files[:10]
-        
     file_configs = []
     
+    # --- Sidebar Configuration ---
+    with st.sidebar:
+        st.header("⚙️ Individual File Configuration")
+        if uploaded_files:
+            st.warning("Verify the settings below for **each** uploaded file.")
+            
+            for i, uploaded_file in enumerate(uploaded_files):
+                # Temporarily reset file pointer for config logic if needed, though mostly handled in processing function
+                
+                with st.expander(f"**{uploaded_file.name}**", expanded=i == 0):
+                    
+                    # Column Configuration
+                    st.subheader("Column Letters")
+                    date_col_str = st.text_input("Date Column Letter", value='A', key=f'date_col_str_{i}')
+                    time_col_str = st.text_input("Time Column Letter", value='B', key=f'time_col_str_{i}')
+                    ps_um_col_str = st.text_input("PSum Column Letter", value='BI', key=f'psum_col_str_{i}', help="PSum (Total Active Power) column letter in this file (e.g., 'BI').")
+
+                    # CSV File Settings
+                    st.subheader("CSV File Parsing")
+                    delimiter_input = st.text_input("CSV Delimiter (Separator)", value=',', key=f'delimiter_input_{i}', help="The character used to separate values (e.g., ',', ';', or '\\t').")
+                    start_row_num = st.number_input("Header Row Number", min_value=1, value=3, key=f'start_row_num_{i}', help="The row number that contains the column headers.")
+                    selected_date_format = st.selectbox("Date Format for Parsing", options=["DD/MM/YYYY", "YYYY-MM-DD"], index=0, key=f'selected_date_format_{i}')
+                    
+                    config = {
+                        'date_col_str': date_col_str, 'time_col_str': time_col_str, 'psum_col_str': ps_um_col_str,
+                        'delimiter_input': delimiter_input, 'start_row_num': start_row_num, 
+                        'selected_date_format': selected_date_format,
+                    }
+                    file_configs.append(config)
+        else:
+            st.info("Upload files to see configuration settings here.")
+
+
+    # --- Main Workflow Buttons ---
+    st.markdown("---")
+    
     if uploaded_files:
-        st.header("Individual File Configuration")
-        st.warning("Please verify the Delimiter, Start Row, and Column Letters for each file below.")
+        col_quick, col_staged = st.columns([1, 2])
         
-        for i, uploaded_file in enumerate(uploaded_files):
-            with st.expander(f"⚙️ Settings for **{uploaded_file.name}**", expanded=i == 0):
-                
-                # Column Configuration
-                st.subheader("Column Letters")
-                date_col_str = st.text_input("Date Column Letter", value='A', key=f'date_col_str_{i}')
-                time_col_str = st.text_input("Time Column Letter", value='B', key=f'time_col_str_{i}')
-                ps_um_col_str = st.text_input("PSum Column Letter", value='BI', key=f'psum_col_str_{i}', help="PSum (Total Active Power) column letter in this file (e.g., 'BI').")
-
-                # CSV File Settings
-                st.subheader("CSV File Parsing")
-                delimiter_input = st.text_input("CSV Delimiter (Separator)", value=',', key=f'delimiter_input_{i}', help="The character used to separate values (e.g., ',', ';', or '\\t').")
-                start_row_num = st.number_input("Header Row Number", min_value=1, value=3, key=f'start_row_num_{i}', help="The row number that contains the column headers.")
-                selected_date_format = st.selectbox("Date Format for Parsing", options=["DD/MM/YYYY", "YYYY-MM-DD"], index=0, key=f'selected_date_format_{i}')
-                
-                config = {
-                    'date_col_str': date_col_str, 'time_col_str': time_col_str, 'psum_col_str': ps_um_col_str,
-                    'delimiter_input': delimiter_input, 'start_row_num': start_row_num, 
-                    'selected_date_format': selected_date_format,
-                }
-                file_configs.append(config)
-                
-        # --- Stage 1 Button (Primary/Green) ---
-        if st.button("1. Consolidate Raw Data", type="primary"):
-            processed_data_dict = process_uploaded_files(uploaded_files, file_configs)
+        # --- QUICK DOWNLOAD ---
+        with col_quick:
+            st.subheader("Quick Analysis")
+            st.markdown("Generate the final 10-minute analysis report in one step.")
             
-            if processed_data_dict:
-                st.session_state['consolidated_data'] = processed_data_dict
-                st.header("Consolidated Raw Data Output")
+            # The actual quick download process handler
+            if st.button("⚡ Quick Download Final Report", type="primary", use_container_width=True):
+                # Use a dedicated container for quick download status
+                quick_status = st.empty()
+                quick_status.info("Starting Quick Download process...")
                 
-                first_sheet_name = next(iter(processed_data_dict))
-                st.subheader(f"Preview of: {first_sheet_name}")
-                st.dataframe(processed_data_dict[first_sheet_name].head())
-                st.success(f"Successfully processed {len(processed_data_dict)} of {len(uploaded_files)} file(s).")
+                final_excel_stream = quick_download_process(uploaded_files, file_configs)
+                
+                if final_excel_stream:
+                    quick_status.success("Quick Analysis Complete! Downloading...")
+                    
+                    # Generate filename
+                    file_names_without_ext = [f.name.rsplit('.', 1)[0] for f in uploaded_files]
+                    if len(file_names_without_ext) > 1:
+                        first_name = file_names_without_ext[0][:10]
+                        quick_filename = f"{first_name}_Multi_Analysis_Report.xlsx"
+                    else:
+                         quick_filename = f"{file_names_without_ext[0]}_Analysis_Report.xlsx" if file_names_without_ext else "Final_Analysis_Report.xlsx"
 
-                # Generate default filename for raw data
-                file_names_without_ext = [f.name.rsplit('.', 1)[0] for f in uploaded_files]
-                default_filename = "EnergyAnalyser_Consolidated_Raw_Data.xlsx"
-                if len(file_names_without_ext) > 1:
-                    first_name = file_names_without_ext[0][:17] + "..." if len(file_names_without_ext[0]) > 20 else file_names_without_ext[0]
-                    default_filename = f"{first_name}_and_{len(file_names_without_ext) - 1}_More_Consolidated.xlsx"
-                elif file_names_without_ext:
-                    default_filename = f"{file_names_without_ext[0]}_Consolidated.xlsx"
-
-                custom_filename = st.text_input(
-                    "Output Excel Filename (Raw):",
-                    value=default_filename,
-                    key="output_filename_input_raw",
-                    help="Enter the name for the final Excel file with raw extracted data."
-                )
-                
-                excel_data = to_excel_consolidation(processed_data_dict)
-                
-                st.download_button(
-                    label="📥 Download Consolidated Data (Raw)",
-                    data=excel_data,
-                    file_name=custom_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-            else:
-                st.error("No data could be successfully processed in Stage 1.")
-            
-    # --- Stage 2: 10-Minute Power Analysis (from Code 2) ---
-    st.markdown("""
-        ---
-        ### **Stage 2: 10-Minute Power Analysis (Aggregation)**
-        Run the 10-minute interval and max power analysis on the **consolidated data** generated in Stage 1.
-    """)
-
-    if 'consolidated_data' in st.session_state and st.session_state['consolidated_data']:
-        
-        st.info(f"Ready to analyze {len(st.session_state['consolidated_data'])} sheet(s) of consolidated data.")
-        
-        # --- Stage 2 Button (Primary/Green) ---
-        if st.button("2. Run 10-Minute Analysis", type="primary"):
-            st.write("Processing data for 10-minute intervals...")
-            analysis_results = {}
-            total_processed_days = 0
-            
-            for sheet_name, df_raw in st.session_state['consolidated_data'].items():
-                
-                # The output from Code 1 is guaranteed to have 'Date', 'Time', and 'PSum (W)' columns
-                processed_df = process_sheet(df_raw, 'Date', 'Time', PSUM_OUTPUT_NAME)
-                
-                if not processed_df.empty:
-                    analysis_results[sheet_name] = processed_df
-                    total_processed_days += len(processed_df['Date'].unique())
+                    st.download_button(
+                        label="Click to Download Final Report",
+                        data=final_excel_stream,
+                        file_name=quick_filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key='quick_download_button_final'
+                    )
+                    st.toast("Download link generated!")
                 else:
-                    st.warning(f"Sheet '{sheet_name}' yielded no usable data after 10-minute processing.")
+                    quick_status.error("Quick Download process failed. Please check file formats and sidebar configurations.")
+                
+        # --- STAGED WORKFLOW ---
+        with col_staged:
+            st.subheader("Staged Workflow")
+            st.markdown("Process step-by-step for verification and intermediate data download.")
+            
+            # --- Stage 1: Consolidate Raw Data ---
+            if st.button("1. Consolidate Raw Data (Extract/Prepare)", type="primary"):
+                processed_data_dict = process_uploaded_files(uploaded_files, file_configs)
+                
+                if processed_data_dict:
+                    st.session_state['consolidated_data'] = processed_data_dict
+                    st.success(f"Stage 1 Complete: Successfully extracted data from {len(processed_data_dict)} of {len(uploaded_files)} file(s).")
 
-            if analysis_results:
-                
-                # 1. Prepare Chart Data for Streamlit and Excel Total Sheet
-                chart_data_df, total_sheet_data = prepare_chart_data(analysis_results)
-                
-                # 2. Display Chart in Streamlit
-                st.header("Daily Max Load Overview (Total Sheet Graph)")
-                st.line_chart(chart_data_df, use_container_width=True)
-                st.markdown("---") # Separator for clarity
+                    # Raw Data Download Section
+                    st.markdown("---")
+                    st.markdown("##### Intermediate Raw Data Download (Optional)")
+                    
+                    file_names_without_ext = [f.name.rsplit('.', 1)[0] for f in uploaded_files]
+                    default_filename = "EnergyAnalyser_Consolidated_Raw_Data.xlsx"
+                    # Generate filename logic
+                    if len(file_names_without_ext) > 1:
+                        first_name = file_names_without_ext[0][:17] + "..." if len(file_names_without_ext[0]) > 20 else file_names_without_ext[0]
+                        default_filename = f"{first_name}_and_{len(file_names_without_ext) - 1}_More_Consolidated.xlsx"
+                    elif file_names_without_ext:
+                        default_filename = f"{file_names_without_ext[0]}_Consolidated.xlsx"
+                    
+                    custom_filename = st.text_input(
+                        "Output Excel Filename (Raw):",
+                        value=default_filename,
+                        key="output_filename_input_raw",
+                        help="Enter the name for the intermediate raw data file."
+                    )
+                    
+                    excel_data = to_excel_consolidation(processed_data_dict)
+                    
+                    st.download_button(
+                        label="📥 Download Consolidated Raw Data",
+                        data=excel_data,
+                        file_name=custom_filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                else:
+                    st.error("Stage 1 failed: No data could be successfully processed. Review sidebar settings.")
+            
+            st.markdown("---")
 
-                # 3. Generate Excel
-                output_stream = build_output_excel(analysis_results, total_sheet_data)
+            # --- Stage 2: 10-Minute Power Analysis ---
+            if 'consolidated_data' in st.session_state and st.session_state['consolidated_data']:
                 
-                st.success(f"Analysis complete! Generated report with data for {total_processed_days} day(s) across {len(analysis_results)} sheet(s).")
-                st.balloons()
+                st.info(f"Step 2 Enabled: Ready to analyze {len(st.session_state['consolidated_data'])} sheet(s) of consolidated data.")
                 
-                # Generate output filename for analysis data
-                default_analysis_filename = "10Min_Power_Analysis_Report.xlsx"
-                
-                st.download_button(
-                    label="⬇️ Download Analysis Report (10-Min Intervals)",
-                    data=output_stream,
-                    file_name=default_analysis_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                if st.button("2. Run 10-Minute Analysis (Final Report)", type="primary"):
+                    st.write("Processing data for 10-minute intervals...")
+                    analysis_results = {}
+                    total_processed_days = 0
+                    
+                    for sheet_name, df_raw in st.session_state['consolidated_data'].items():
+                        processed_df = process_sheet(df_raw, 'Date', 'Time', PSUM_OUTPUT_NAME)
+                        
+                        if not processed_df.empty:
+                            analysis_results[sheet_name] = processed_df
+                            total_processed_days += len(processed_df['Date'].unique())
+
+                    if analysis_results:
+                        
+                        # 1. Prepare Chart Data for Streamlit
+                        chart_data_df, total_sheet_data = prepare_chart_data(analysis_results)
+                        
+                        # 2. Display Chart in Streamlit
+                        st.subheader("Daily Max Load Overview (Total Sheet Graph)")
+                        st.line_chart(chart_data_df, use_container_width=True)
+
+                        # 3. Generate Excel
+                        output_stream = build_output_excel(analysis_results, total_sheet_data)
+                        
+                        st.success(f"Stage 2 Complete! Report generated with data for {total_processed_days} day(s) across {len(analysis_results)} sheet(s).")
+                        st.balloons()
+                        
+                        # Download button for analysis data
+                        default_analysis_filename = "10Min_Power_Analysis_Report.xlsx"
+                        
+                        st.download_button(
+                            label="⬇️ Download Final Analysis Report",
+                            data=output_stream,
+                            file_name=default_analysis_filename,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key='staged_download_button_final'
+                        )
+                    else:
+                        st.error("No data was suitable for 10-minute analysis. Check data integrity.")
+                        
             else:
-                st.error("No data was suitable for 10-minute analysis. Please check the raw data for valid power readings.")
+                st.markdown("_Complete step 1 to enable step 2._")
                 
     else:
-        st.markdown("Please successfully process and consolidate CSV files in **Stage 1** first.")
+        st.info("Upload your CSV files above to begin configuration and processing.")
 
 if __name__ == "__main__":
-    # Initialize session state for data persistence between runs
     if 'consolidated_data' not in st.session_state:
         st.session_state['consolidated_data'] = None
         
