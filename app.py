@@ -44,7 +44,8 @@ def process_uploaded_files(uploaded_files, columns_config, header_index):
         try:
             # Read CSV (using header index)
             # Use 'None' for header to get raw column indices, then drop rows before header_index
-            df_full = pd.read_csv(uploaded_file, header=None, encoding='ISO-8859-1', low_memory=False)
+            # FIX: Added sep=';' to handle semicolon-delimited CSVs, common cause of "Error tokenizing data"
+            df_full = pd.read_csv(uploaded_file, header=None, encoding='ISO-8859-1', low_memory=False, sep=';')
 
             # Assign header names from the target row
             header_row = df_full.iloc[header_index].astype(str)
