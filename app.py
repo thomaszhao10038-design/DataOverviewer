@@ -513,9 +513,9 @@ def quick_download_process(uploaded_files, file_configs):
     
     for sheet_name, df_raw in processed_data_dict.items():
         # Ensure file pointer is reset before processing multiple times
-        for uploaded_file in uploaded_files:
-            uploaded_file.seek(0) 
-
+        # Note: uploaded_files are in memory, seeking is generally not needed here, 
+        # but the files were re-read in the consolidation step.
+        
         processed_df = process_sheet(df_raw, 'Date', 'Time', PSUM_OUTPUT_NAME)
         if not processed_df.empty:
             analysis_results[sheet_name] = processed_df
@@ -555,10 +555,9 @@ def app():
     with st.sidebar:
         st.header("⚙️ Individual File Configuration")
         if uploaded_files:
-            st.warning("Verify the settings below for **each** uploaded file.")
+            st.warning("Verify the settings below for **each** uploaded file. Defaults are based on common MSB reports.")
             
             for i, uploaded_file in enumerate(uploaded_files):
-                # Temporarily reset file pointer for config logic if needed, though mostly handled in processing function
                 
                 with st.expander(f"**{uploaded_file.name}**", expanded=i == 0):
                     
@@ -588,50 +587,52 @@ def app():
     st.markdown("---")
     
     if uploaded_files:
+        # Use two columns for clear division of the two paths
         col_quick, col_staged = st.columns([1, 2])
         
-        # --- QUICK DOWNLOAD ---
+        # --- ONE-CLICK DOWNLOAD (The primary action) ---
         with col_quick:
-            st.subheader("Quick Analysis")
-            st.markdown("Generate the final 10-minute analysis report in one step.")
-            
-            # The actual quick download process handler
-            if st.button("⚡ Quick Download Final Report", type="primary", use_container_width=True):
-                # Use a dedicated container for quick download status
-                quick_status = st.empty()
-                quick_status.info("Starting Quick Download process...")
+            with st.container(border=True):
+                st.subheader("🎯 One-click Analysis")
+                st.markdown("Fully automate both steps: Extract, consolidate, analyze, and download the final 10-minute report.")
                 
-                final_excel_stream = quick_download_process(uploaded_files, file_configs)
-                
-                if final_excel_stream:
-                    quick_status.success("Quick Analysis Complete! Downloading...")
+                if st.button("⚡ Quick Download Final Report", type="primary", use_container_width=True):
+                    # Use a dedicated container for quick download status
+                    quick_status = st.empty()
+                    quick_status.info("Starting One-click Analysis process...")
                     
-                    # Generate filename
-                    file_names_without_ext = [f.name.rsplit('.', 1)[0] for f in uploaded_files]
-                    if len(file_names_without_ext) > 1:
-                        first_name = file_names_without_ext[0][:10]
-                        quick_filename = f"{first_name}_Multi_Analysis_Report.xlsx"
-                    else:
-                         quick_filename = f"{file_names_without_ext[0]}_Analysis_Report.xlsx" if file_names_without_ext else "Final_Analysis_Report.xlsx"
+                    final_excel_stream = quick_download_process(uploaded_files, file_configs)
+                    
+                    if final_excel_stream:
+                        quick_status.success("Quick Analysis Complete! Generating download link...")
+                        
+                        # Generate filename
+                        file_names_without_ext = [f.name.rsplit('.', 1)[0] for f in uploaded_files]
+                        if len(file_names_without_ext) > 1:
+                            first_name = file_names_without_ext[0][:10]
+                            quick_filename = f"{first_name}_Multi_Analysis_Report.xlsx"
+                        else:
+                             quick_filename = f"{file_names_without_ext[0]}_Analysis_Report.xlsx" if file_names_without_ext else "Final_Analysis_Report.xlsx"
 
-                    st.download_button(
-                        label="Click to Download Final Report",
-                        data=final_excel_stream,
-                        file_name=quick_filename,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key='quick_download_button_final'
-                    )
-                    st.toast("Download link generated!")
-                else:
-                    quick_status.error("Quick Download process failed. Please check file formats and sidebar configurations.")
-                
-        # --- STAGED WORKFLOW ---
+                        st.download_button(
+                            label="📥 Click to Download Final Report",
+                            data=final_excel_stream,
+                            file_name=quick_filename,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key='quick_download_button_final',
+                            type="secondary" # Secondary here because it's the *result* of the primary button press
+                        )
+                        st.toast("Download link generated!")
+                    else:
+                        quick_status.error("One-click Analysis failed. Please check file formats and sidebar configurations.")
+
+        # --- STAGED WORKFLOW (Step-by-step control) ---
         with col_staged:
-            st.subheader("Staged Workflow")
-            st.markdown("Process step-by-step for verification and intermediate data download.")
+            st.subheader("🪜 Staged Workflow")
+            st.markdown("Process step-by-step to check intermediate results and perform verification.")
             
             # --- Stage 1: Consolidate Raw Data ---
-            if st.button("1. Consolidate Raw Data (Extract/Prepare)", type="primary"):
+            if st.button("1. Consolidate Raw Data (Extract/Prepare)", type="primary", help="Reads files, extracts configured columns, and prepares data for 10-minute analysis."):
                 processed_data_dict = process_uploaded_files(uploaded_files, file_configs)
                 
                 if processed_data_dict:
@@ -644,7 +645,7 @@ def app():
                     
                     file_names_without_ext = [f.name.rsplit('.', 1)[0] for f in uploaded_files]
                     default_filename = "EnergyAnalyser_Consolidated_Raw_Data.xlsx"
-                    # Generate filename logic
+                    
                     if len(file_names_without_ext) > 1:
                         first_name = file_names_without_ext[0][:17] + "..." if len(file_names_without_ext[0]) > 20 else file_names_without_ext[0]
                         default_filename = f"{first_name}_and_{len(file_names_without_ext) - 1}_More_Consolidated.xlsx"
@@ -665,6 +666,7 @@ def app():
                         data=excel_data,
                         file_name=custom_filename,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="secondary" # Secondary style for intermediate download
                     )
                 else:
                     st.error("Stage 1 failed: No data could be successfully processed. Review sidebar settings.")
@@ -676,7 +678,7 @@ def app():
                 
                 st.info(f"Step 2 Enabled: Ready to analyze {len(st.session_state['consolidated_data'])} sheet(s) of consolidated data.")
                 
-                if st.button("2. Run 10-Minute Analysis (Final Report)", type="primary"):
+                if st.button("2. Run 10-Minute Analysis (Final Report)", type="primary", help="Analyzes the consolidated data, removes zero-padding, resamples to 10-minute intervals, and generates the final Excel report with charts."):
                     st.write("Processing data for 10-minute intervals...")
                     analysis_results = {}
                     total_processed_days = 0
@@ -711,7 +713,8 @@ def app():
                             data=output_stream,
                             file_name=default_analysis_filename,
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key='staged_download_button_final'
+                            key='staged_download_button_final',
+                            type="secondary"
                         )
                     else:
                         st.error("No data was suitable for 10-minute analysis. Check data integrity.")
