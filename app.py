@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO, StringIO
 import time
-import csv # Required for Sniffer
+import csv
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers
 from openpyxl.chart import LineChart, Reference, Series
@@ -55,83 +55,95 @@ def process_uploaded_files(uploaded_files, columns_config, header_index):
         st.error("Date, Time, and PSum must come from three unique columns.")
         return {}
 
+    # Define the list of encodings to try
+    ENCODING_FALLBACKS = ['utf-8', 'ISO-8859-1', 'utf-16', 'latin-1']
+    
     for uploaded_file in uploaded_files:
         filename = uploaded_file.name
         
         try:
-            # 1. Read the file content into a string buffer, attempting UTF-8 first
             file_content_bytes = uploaded_file.getvalue()
-            try:
-                # Attempt standard UTF-8 decoding
-                file_content_str = file_content_bytes.decode('utf-8')
-                st.info(f"File **{filename}**: Used UTF-8 encoding.")
-                encoding_used = 'utf-8'
-            except UnicodeDecodeError:
-                # Fallback to common logger encoding
-                file_content_str = file_content_bytes.decode('ISO-8859-1')
-                st.warning(f"File **{filename}**: UTF-8 failed, used ISO-8859-1 encoding.")
-                encoding_used = 'ISO-8859-1'
+            file_content_str = None
+            encoding_used = None
+
+            # 1. Iterative Decoding Attempt
+            for encoding in ENCODING_FALLBACKS:
+                try:
+                    file_content_str = file_content_bytes.decode(encoding)
+                    st.info(f"File **{filename}**: Used `{encoding}` encoding.")
+                    encoding_used = encoding
+                    break
+                except UnicodeDecodeError:
+                    continue # Try next encoding
+
+            if not file_content_str:
+                st.error(f"File **{filename}** could not be decoded using any common encodings.")
+                continue
 
             # 2. Sniff the delimiter
             detected_delimiter = sniff_delimiter(file_content_str)
-            
             st.info(f"File **{filename}**: Sniffed delimiter: `{detected_delimiter}`.")
 
             # 3. Iterative Reading Attempt with Delimiter Fallback
             read_success = False
-            df_full = pd.DataFrame() # Initialize outside the loop
+            df_full = pd.DataFrame() 
             
-            # Prioritized list of delimiters to try: Sniffed, Semicolon (European), Comma (Standard)
-            delimiters_to_try = [detected_delimiter, ';', ',']
+            # Prioritized list of delimiters to try
+            delimiters_to_try = [detected_delimiter, ',', ';', '\t']
             
             for delimiter_to_try in delimiters_to_try:
                 if not delimiter_to_try or delimiter_to_try == '\n': continue
 
                 try:
-                    # Reset buffer position for each read attempt
                     file_buffer = StringIO(file_content_str)
                     
+                    # Read all rows without parsing yet
                     df_attempt = pd.read_csv(
                         file_buffer, 
                         sep=delimiter_to_try, 
                         header=None, 
-                        low_memory=False
+                        low_memory=False,
+                        skip_blank_lines=True
                     )
                     
                     # Heuristic check: Ensure DataFrame is not empty and has enough columns
-                    if not df_attempt.empty and df_attempt.shape[1] > max(columns_config.keys()):
+                    # We check against the max index + 1 to be safe
+                    required_cols = max(columns_config.keys()) + 1
+                    if not df_attempt.empty and df_attempt.shape[1] >= required_cols:
                         df_full = df_attempt
-                        st.success(f"File **{filename}** successfully read using delimiter: `{delimiter_to_try}`.")
+                        st.success(f"File **{filename}** successfully parsed using delimiter: `{delimiter_to_try}`.")
                         read_success = True
-                        break # Success, move to the next step
+                        break 
                     
                 except pd.errors.ParserError:
-                    # Parsing failed, try the next delimiter
                     pass
                 except Exception as e:
-                    # Other exceptions (e.g., ValueError)
+                    # Catch all other exceptions during read_csv
+                    st.warning(f"Unexpected error with delimiter `{delimiter_to_try}`: {e}")
                     pass
 
 
             if not read_success:
-                st.error(f"File **{filename}** could not be parsed after trying all fallbacks (`{detected_delimiter}`, `;`, `,`) using {encoding_used}. Please check the file's encoding and structure.")
-                continue # Skip to the next file
+                st.error(f"File **{filename}** could not be parsed after trying all delimiter fallbacks (`{', '.join(delimiters_to_try)}`) using {encoding_used}. Please check the file's column structure.")
+                continue 
             
             # --- Data Processing (Continues only if read_success is True) ---
             
             # Assign header names from the target row
-            header_row = df_full.iloc[header_index].astype(str)
+            # Use .astype(str) to ensure headers are string even if they look numeric
+            header_row = df_full.iloc[header_index].astype(str).str.strip()
             df_full.columns = header_row
             
             # Start data from row index + 1
             df_full = df_full[header_index + 1:].reset_index(drop=True)
 
-            # Map configured indices (A, B, BI) to new DataFrame indices (0-based)
+            # Map configured indices (0-based) to new DataFrame based on original indices
             df_extracted = df_full.iloc[:, col_indices].copy()
             df_extracted.columns = list(columns_config.values()) # Assign standardized names
 
             # 1. PSum numeric conversion (handle potential commas, coerce errors)
             power_series = df_extracted[PSUM_RAW_NAME].astype(str).str.strip()
+            # Replace European decimal comma with standard decimal point
             power_series = power_series.str.replace(',', '.', regex=False)
             df_extracted[PSUM_RAW_NAME] = pd.to_numeric(power_series, errors='coerce')
             
@@ -456,7 +468,7 @@ def app():
     1. **Extraction (Stage 1):** Upload raw CSV files. The application extracts **Date**, **Time**, and **PSum (W)** based on the column letters you configure, using **Row 3** (index 2) as the header.
     2. **Analysis (Stage 2):** The extracted data is cleaned, resampled to **10-minute intervals**, filtered to the active period (zero readings at start/end are removed), and formatted into a comprehensive Excel report with charts.
     
-    ***The app now automatically tries UTF-8, then falls back to ISO-8859-1 encoding, and uses iterative fallback for delimiters (Sniffed, semicolon, then comma) to ensure maximum compatibility.***
+    ***The app now tries a wider range of encoding fallbacks (`utf-8`, `ISO-8859-1`, `utf-16`, `latin-1`) and delimiter fallbacks to handle specialized logger output.***
     """)
     st.write("---")
 
