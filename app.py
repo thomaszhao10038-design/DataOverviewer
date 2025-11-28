@@ -9,7 +9,6 @@ from openpyxl.utils import get_column_letter
 import datetime
 
 # --- Configuration & Constants ---
-# HEADER_ROW_INDEX is now dynamically set via user input in the sidebar
 PSUM_RAW_NAME = 'PSum (W)'      # Name used after extraction from CSV
 POWER_COL_OUT = 'PSumW'         # Name used after 10-min aggregation and in Excel
 
@@ -26,32 +25,39 @@ def excel_col_to_index(col_str):
     return index - 1
 
 # --- Stage 1: Process CSV Files (Extraction and Clean up) ---
-def process_uploaded_files(uploaded_files, columns_config, header_index):
+def process_uploaded_files(file_configs):
     """
-    Reads CSVs, extracts Date, Time, and PSum columns, and consolidates.
-    The header_index is the 0-based index of the row containing headers.
+    Reads CSVs, extracts Date, Time, and PSum columns based on file-specific configuration, 
+    and consolidates.
     """
     processed_data = {}
-    col_indices = list(columns_config.keys())
-    
-    if len(set(col_indices)) != 3:
-        st.error("Date, Time, and PSum must come from three unique columns.")
-        return {}
 
-    for uploaded_file in uploaded_files:
+    for config in file_configs:
+        uploaded_file = config['file']
+        header_index = config['header_index']
+        columns_config = config['columns_config']
+        date_format = config['date_format']
+
         filename = uploaded_file.name
+        st.info(f"Processing **{filename}**...")
+        
+        col_indices = list(columns_config.keys())
+        
+        if len(set(col_indices)) != 3:
+            st.error(f"Error in {filename}: Date, Time, and PSum must come from three unique columns.")
+            continue
+
         try:
             # Read CSV with no header initially (header=None). Columns are 0, 1, 2, ...
+            # Using low_memory=False to help with mixed types
             df_full = pd.read_csv(uploaded_file, header=None, encoding='ISO-8859-1', low_memory=False, sep=';')
 
-            # --- FIX: Simplify Data/Header Handling ---
             # Data rows start from the row *after* the header row index.
-            # We skip the original header row and everything before it.
             if header_index < 0 or header_index >= len(df_full):
                 st.error(f"Error processing file **{filename}**: Configured Header Row (Index {header_index + 1}) is out of bounds for this file.")
                 continue
 
-            # df_data now contains only the rows that should be processed as data (everything after the header row).
+            # df_data contains only the rows that should be processed as data (everything after the header row).
             df_data = df_full.iloc[header_index + 1:].reset_index(drop=True)
             
             # Get the maximum number of columns available in the data
@@ -66,7 +72,7 @@ def process_uploaded_files(uploaded_files, columns_config, header_index):
                 st.error(f"The file only contains {max_cols} columns (up to column **{last_col_letter}**).")
                 continue # Skip to the next file
 
-            # Extract columns by integer index (this is safer and resolves the reported sequence item error)
+            # Extract columns by integer index 
             df_extracted = df_data.iloc[:, col_indices].copy()
             df_extracted.columns = list(columns_config.values()) # Assign standardized names (all strings)
 
@@ -75,8 +81,18 @@ def process_uploaded_files(uploaded_files, columns_config, header_index):
             power_series = power_series.str.replace(',', '.', regex=False)
             df_extracted[PSUM_RAW_NAME] = pd.to_numeric(power_series, errors='coerce')
             
+            # Get date parsing parameter
+            dayfirst = (date_format == "DD/MM/YYYY")
+
             # 2. Date and Time formatting cleanup
-            df_extracted['Date'] = pd.to_datetime(df_extracted['Date'], errors='coerce', dayfirst=True, infer_datetime_format=True).dt.strftime('%d/%m/%Y')
+            # Parse date using the selected format
+            df_extracted['Date'] = pd.to_datetime(
+                df_extracted['Date'], 
+                errors='coerce', 
+                dayfirst=dayfirst, 
+                infer_datetime_format=True
+            ).dt.strftime('%d/%m/%Y')
+            
             df_extracted['Time'] = pd.to_datetime(df_extracted['Time'], errors='coerce').dt.strftime('%H:%M:%S')
 
             df_final = df_extracted[['Date', 'Time', PSUM_RAW_NAME]].copy()
@@ -86,9 +102,7 @@ def process_uploaded_files(uploaded_files, columns_config, header_index):
             processed_data[sheet_name] = df_final
 
         except Exception as e:
-            st.error(f"Error processing file **{filename}**: {e}")
-            # Add a hint about the header if the error is generic
-            st.warning(f"Hint: Check if the configured header row number ({header_index + 1}) is correct.")
+            st.error(f"An unexpected error occurred while processing file **{filename}**: {e}")
             continue
 
     return processed_data
@@ -394,53 +408,17 @@ def app():
     st.title("⚡ Energy Data Pipeline: CSV Consolidation & 10-Min Analysis")
     st.markdown("""
     This application performs a single, two-stage process:
-    1. **Extraction (Stage 1):** Upload raw CSV files. The application extracts **Date**, **Time**, and **PSum (W)** based on the column letters you configure, using the specified row as the header.
-    2. **Analysis (Stage 2):** The extracted data is cleaned, resampled to **10-minute intervals**, filtered to the active period (zero readings at start/end are removed), and formatted into a comprehensive Excel report with charts.
+    1. **Extraction (Stage 1):** Upload raw CSV files. You can configure the **Header Row**, **Column Letters**, and **Date Format** for *each* file individually below.
+    2. **Analysis (Stage 2):** The extracted data is cleaned, resampled to **10-minute intervals**, filtered to the active period, and formatted into an Excel report with charts.
     """)
     st.write("---")
 
-    # --- Sidebar: Column Configuration (Stage 1 Config) ---
-    st.sidebar.header("⚙️ Raw CSV Configuration")
-
-    # New input for Header Row
-    header_row_input = st.sidebar.number_input(
-        "Header Row Number (1-based)", 
-        min_value=1, 
-        value=4, # Default to Row 4 (index 3) as requested
-        step=1, 
-        help="The 1-based row number containing the column headers (e.g., enter 4 for Row 4)."
-    )
-    # Convert 1-based row number to 0-based index
-    header_index = int(header_row_input) - 1
-
-    st.sidebar.markdown(f"Data will be read starting from **Row {header_index + 2}**.")
-
-    date_col_str = st.sidebar.text_input("Date Column Letter (Default: A)", value='A')
-    time_col_str = st.sidebar.text_input("Time Column Letter (Default: B)", value='B')
-    ps_um_col_str = st.sidebar.text_input("PSum Column Letter (Default: BI)", value='BI',
-                                            help="PSum (Total Active Power) column.")
-
-    # Convert column letters to indices
-    try:
-        date_col_index = excel_col_to_index(date_col_str)
-        time_col_index = excel_col_to_index(time_col_str)
-        ps_um_col_index = excel_col_to_index(ps_um_col_str)
-
-        COLUMNS_TO_EXTRACT = {
-            date_col_index: 'Date',
-            time_col_index: 'Time',
-            ps_um_col_index: PSUM_RAW_NAME
-        }
-
-    except ValueError as e:
-        st.error(f"Configuration Error: {e}")
-        return
-
-    # --- Main Area: File Upload ---
+    # --- File Upload ---
     uploaded_files = st.file_uploader(
         "Upload Raw CSV files (Max 10)", 
         type=['csv'], 
-        accept_multiple_files=True
+        accept_multiple_files=True,
+        key="file_uploader"
     )
     if uploaded_files and len(uploaded_files) > 10:
         st.warning(f"You uploaded {len(uploaded_files)} files. Only the first 10 will be processed.")
@@ -448,27 +426,92 @@ def app():
     
     st.write("---")
 
-    # --- Execution Button ---
+    # --- Stage 1: Dynamic Configuration per File ---
+    file_configs = []
     if uploaded_files:
-        if st.button(f"🚀 Run Full Pipeline on {len(uploaded_files)} File(s)"):
+        st.header("Stage 1: Per-File Configuration")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.markdown("**File Name**")
+        col2.markdown("**Data Reading Starts From**")
+        col3.markdown("**Column Letters (D/T/P)**")
+        col4.markdown("**Date Format**")
+
+
+        for i, file in enumerate(uploaded_files):
+            with st.expander(f"Settings for: **{file.name}**", expanded=False):
+                config_cols = st.columns(4)
+                
+                # 1. Header Row Input
+                header_row_input = config_cols[0].number_input(
+                    "Header Row Number (1-based)", 
+                    min_value=1, 
+                    value=4, # Default to Row 4 (index 3) as requested
+                    step=1, 
+                    key=f"header_row_{i}",
+                    label_visibility="collapsed",
+                    help="The row number containing the column headers (e.g., enter 4 for Row 4)."
+                )
+                header_index = int(header_row_input) - 1 # Convert to 0-based index
+
+                # Display the 'Data reading starts from' information
+                config_cols[1].markdown(f"Data starts from **Row {header_index + 2}**")
+
+                # 2. Column Letters Input
+                date_col_str = config_cols[2].text_input("Date Col (A)", value='A', key=f"date_col_{i}", label_visibility="collapsed")
+                time_col_str = config_cols[2].text_input("Time Col (B)", value='B', key=f"time_col_{i}", label_visibility="collapsed")
+                ps_um_col_str = config_cols[2].text_input("PSum Col (BI)", value='BI', key=f"ps_um_col_{i}", label_visibility="collapsed")
+
+                # 3. Date Format Selector
+                date_format = config_cols[3].selectbox(
+                    "Date Format", 
+                    ["DD/MM/YYYY", "YYYY-MM-DD"], 
+                    index=0, 
+                    key=f"date_format_{i}",
+                    label_visibility="collapsed",
+                    help="Select the format used in the Date column of this CSV."
+                )
+
+                # Store configuration
+                try:
+                    date_col_index = excel_col_to_index(date_col_str)
+                    time_col_index = excel_col_to_index(time_col_str)
+                    ps_um_col_index = excel_col_to_index(ps_um_col_str)
+
+                    columns_to_extract = {
+                        date_col_index: 'Date',
+                        time_col_index: 'Time',
+                        ps_um_col_index: PSUM_RAW_NAME
+                    }
+
+                    file_configs.append({
+                        'file': file,
+                        'header_index': header_index,
+                        'columns_config': columns_to_extract,
+                        'date_format': date_format
+                    })
+                except ValueError as e:
+                    st.error(f"Configuration Error for {file.name}: {e}. Please correct the column letters.")
+                    return
+
+    # --- Execution Button ---
+    if file_configs:
+        st.write("---")
+        if st.button(f"🚀 Run Full Pipeline on {len(file_configs)} Configured File(s)"):
             
             # Use a spinner to show activity
             with st.spinner("Processing files... This may take a moment."):
                 
-                st.info("Starting Stage 1: Consolidating and cleaning raw data...")
+                st.subheader("Process Log:")
                 
                 # 1. STAGE 1: Consolidation
-                processed_raw_data_dict = process_uploaded_files(
-                    uploaded_files, 
-                    COLUMNS_TO_EXTRACT, 
-                    header_index # Use the dynamic index
-                )
+                processed_raw_data_dict = process_uploaded_files(file_configs)
 
                 if not processed_raw_data_dict:
-                    st.error("Stage 1 failed: No files were successfully processed. Check file structure, column letters, or header row number.")
+                    st.error("Stage 1 failed: No files were successfully processed. Review your configurations above.")
                     return
 
-                st.success(f"Stage 1 Complete: Consolidated data from {len(processed_raw_data_dict)} file(s).")
+                st.success(f"Stage 1 Complete: Consolidated raw data from {len(processed_raw_data_dict)} file(s).")
                 st.info("Starting Stage 2: 10-Minute Resampling and Analysis...")
 
                 # 2. STAGE 2: Analysis (10-min resampling and filtering)
@@ -488,7 +531,7 @@ def app():
                 progress_bar.empty()
 
                 if not final_processed_data_dict:
-                    st.error("Stage 2 failed: No usable data found after 10-minute resampling and zero-filtering. Data might be entirely zero or contain too many errors.")
+                    st.error("Stage 2 failed: No usable data found after 10-minute resampling and zero-filtering.")
                     return
                 
                 st.success(f"Stage 2 Complete: Analyzed and prepared data for {len(final_processed_data_dict)} sheet(s).")
@@ -500,7 +543,7 @@ def app():
                     excel_data = build_output_excel(final_processed_data_dict)
                     
                     # Default filename generation
-                    file_names_without_ext = [f.name.rsplit('.', 1)[0] for f in uploaded_files]
+                    file_names_without_ext = [f['file'].name.rsplit('.', 1)[0] for f in file_configs]
                     if len(file_names_without_ext) > 1:
                         first_name = file_names_without_ext[0][:17] + "..." if len(file_names_without_ext[0]) > 20 else file_names_without_ext[0]
                         default_filename = f"{first_name}_and_{len(file_names_without_ext)-1}_Analyzed.xlsx"
