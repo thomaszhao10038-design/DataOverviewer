@@ -407,6 +407,7 @@ def process_uploaded_files(uploaded_files, file_configs):
             date_format_string = DATE_FORMAT_MAP.get(config['selected_date_format'])
             separator = config['delimiter_input']
             
+            uploaded_file.seek(0) # Ensure file pointer is at the start
             df_full = pd.read_csv(
                 uploaded_file, 
                 header=header_index, 
@@ -534,6 +535,9 @@ def app():
             st.markdown("⚠️ **Verify settings for each uploaded file.**")
         
             for i, uploaded_file in enumerate(uploaded_files):
+                # Ensure the file is read from the start if it's being previewed or read multiple times
+                uploaded_file.seek(0)
+                
                 with st.expander(f"⚙️ **{uploaded_file.name}**", expanded=i == 0):
                     
                     # Column Configuration
@@ -556,7 +560,7 @@ def app():
                     file_configs.append(config)
         # --- END SIDEBAR CONFIGURATION ---
         
-        if st.button("🚀 Process & Consolidate Files"):
+        if st.button("🚀 Process & Consolidate Files", type="primary"): # Highlighted button
             processed_data_dict = process_uploaded_files(uploaded_files, file_configs)
             
             if processed_data_dict:
@@ -588,6 +592,7 @@ def app():
                     data=excel_data,
                     file_name=custom_filename,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary" # Highlighted button
                 )
             else:
                 st.error("No data could be successfully processed in Stage 1. Please check the configurations in the sidebar.")
@@ -603,7 +608,7 @@ def app():
         
         st.info(f"Ready to analyze {len(st.session_state['consolidated_data'])} sheet(s) of consolidated data.")
         
-        if st.button("📈 Run 10-Minute Analysis & Generate Excel"):
+        if st.button("📈 Run 10-Minute Analysis & Generate Excel", type="primary"): # Highlighted button
             st.write("Processing data for 10-minute intervals...")
             analysis_results = {}
             total_processed_days = 0
@@ -632,20 +637,24 @@ def app():
                 # 3. Generate Excel
                 output_stream = build_output_excel(analysis_results, total_sheet_data)
                 
+                st.session_state['analysis_output_stream'] = output_stream
+                
                 st.success(f"Analysis complete! Generated report with data for {total_processed_days} day(s) across {len(analysis_results)} sheet(s).")
                 st.balloons()
                 
-                # Generate output filename for analysis data
-                default_analysis_filename = "10Min_Power_Analysis_Report.xlsx"
-                
-                st.download_button(
-                    label="⬇️ Download Analysis Report (10-Min Intervals)",
-                    data=output_stream,
-                    file_name=default_analysis_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
             else:
                 st.error("No data was suitable for 10-minute analysis. Please check the raw data for valid power readings.")
+                st.session_state['analysis_output_stream'] = None # Clear stream if analysis failed
+        
+        # Display download button if analysis was successful in this run or a previous run
+        if 'analysis_output_stream' in st.session_state and st.session_state['analysis_output_stream']:
+            st.download_button(
+                label="⬇️ Download Analysis Report (10-Min Intervals)",
+                data=st.session_state['analysis_output_stream'],
+                file_name="10Min_Power_Analysis_Report.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary" # Highlighted button
+            )
                 
     else:
         st.markdown("Please successfully process and consolidate CSV files in **Stage 1** first.")
@@ -654,5 +663,7 @@ if __name__ == "__main__":
     # Initialize session state for data persistence between runs
     if 'consolidated_data' not in st.session_state:
         st.session_state['consolidated_data'] = None
+    if 'analysis_output_stream' not in st.session_state:
+        st.session_state['analysis_output_stream'] = None
         
     app()
