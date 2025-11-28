@@ -469,7 +469,9 @@ def to_excel_consolidation(data_dict):
 
 def app():
     st.set_page_config(layout="wide", page_title="EnergyAnalyser Pro")
-    st.title("⚡ EnergyAnalyser Pro: CSV Consolidation & Power Analysis")
+    
+    # --- Title Change Here ---
+    st.title("⚡ DataAnalyser Pro for MSB")
     
     st.markdown("""
         ### **Stage 1: CSV Data Consolidation (from Code 1)**
