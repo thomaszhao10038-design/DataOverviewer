@@ -206,9 +206,14 @@ def build_output_excel(sheets_dict):
             ws.cell(row=2, column=col_start+2, value="Active Power (W)")
             ws.cell(row=2, column=col_start+3, value="kW")
 
-            # Merge UTC column (Starts at row 3). Use '0' or blank since we don't calculate offset.
+            # START OF USER-REQUESTED CHANGE
+            # Merge UTC column (Starts at row 3). The value is now the date object.
             ws.merge_cells(start_row=merge_start, start_column=col_start, end_row=merge_end, end_column=col_start)
-            ws.cell(row=merge_start, column=col_start, value=0).alignment = Alignment(horizontal="center", vertical="center")
+            date_cell = ws.cell(row=merge_start, column=col_start, value=date)
+            date_cell.alignment = Alignment(horizontal="center", vertical="center")
+            # Set the number format to ensure the date displays correctly (YYYY-MM-DD)
+            date_cell.number_format = numbers.FORMAT_DATE_YYYYMMDD2
+            # END OF USER-REQUESTED CHANGE
 
             # Fill data (starts at row 3)
             for idx, r in enumerate(day_data_full.itertuples(), start=merge_start):
