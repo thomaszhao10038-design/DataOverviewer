@@ -135,6 +135,8 @@ def prepare_chart_data(analysis_results):
     """
     Aggregates the daily maximum kW for all sheets into a single DataFrame
     suitable for Streamlit charting and returns the total_sheet_data dictionary.
+    
+    Returns: (chart_df, total_sheet_data_dict)
     """
     total_sheet_data = {}
     
@@ -228,7 +230,7 @@ def build_output_excel(sheets_dict, total_sheet_data):
             # Fill data (starts at row 3)
             for idx, r in enumerate(day_data_full.itertuples(), start=merge_start):
                 ws.cell(row=idx, column=col_start+1, value=r.Time)
-                # Use np.nan instead of value=None for openpyxl compatibility 
+                # Use None for openpyxl compatibility to write blank cells for NaN
                 ws.cell(row=idx, column=col_start+2, value=getattr(r, POWER_COL_OUT) if not pd.isna(getattr(r, POWER_COL_OUT)) else None) 
                 ws.cell(row=idx, column=col_start+3, value=r.kW if not pd.isna(r.kW) else None)
 
@@ -367,12 +369,14 @@ def build_output_excel(sheets_dict, total_sheet_data):
             ws_total.add_chart(chart_total, "B" + str(data_max_row + 3))
 
     stream = BytesIO()
+    # Remove default 'Sheet' if it was created and is empty
     if 'Sheet' in wb.sheetnames and len(wb.sheetnames) > len(sheets_dict) + (1 if total_sheet_data else 0):
         wb.remove(wb['Sheet'])
         
     wb.save(stream)
     stream.seek(0)
     return stream
+
 
 # -------------------------------------
 # --- Functions from Code 1.py (Consolidation) ---
@@ -389,6 +393,7 @@ def process_uploaded_files(uploaded_files, file_configs):
         filename = uploaded_file.name
         # Ensure the index i is valid for file_configs before proceeding
         if i >= len(file_configs):
+             # This case should ideally not happen now due to the fix, but kept as a safeguard
              st.error(f"Internal error: Configuration for file index {i} is missing. Please re-run the script.")
              continue
 
@@ -505,13 +510,18 @@ def to_excel_consolidation(data_dict):
     return output.getvalue()
 
 def quick_download_process(uploaded_files, file_configs):
-    """Handles the auto-run of both stages and returns the final analysis Excel stream."""
+    """
+    Handles the auto-run of both stages and returns the final analysis Excel stream,
+    the analysis results, and the chart data.
+    
+    Returns: (output_stream, analysis_results, chart_data_df)
+    """
     
     # Stage 1: Process and Consolidate
     processed_data_dict = process_uploaded_files(uploaded_files, file_configs)
 
     if not processed_data_dict:
-        return None
+        return None, None, None
 
     # Stage 2: 10-Minute Analysis
     analysis_results = {}
@@ -522,15 +532,15 @@ def quick_download_process(uploaded_files, file_configs):
             analysis_results[sheet_name] = processed_df
 
     if not analysis_results:
-        return None
+        return None, None, None
         
     # Prepare data for Total sheet and chart generation
-    _, total_sheet_data = prepare_chart_data(analysis_results)
+    chart_data_df, total_sheet_data = prepare_chart_data(analysis_results)
     
     # Build and return the final Excel file stream
     output_stream = build_output_excel(analysis_results, total_sheet_data)
     
-    return output_stream
+    return output_stream, analysis_results, chart_data_df
 
 
 # -------------------------------------
@@ -556,12 +566,64 @@ def app():
     
     # --- Sidebar Configuration & One-click Action ---
     with st.sidebar:
-        st.header("⚙️ Individual File Configuration")
         
         if uploaded_files:
+            
+            # --- 1. QUICK DOWNLOAD SECTION (Moved to the top) ---
+            st.header("⚡ Quick Analysis & Download")
+            with st.container(border=True):
+                st.markdown("Automate both steps: Extract, consolidate, analyze, and download the final 10-minute report.")
+                
+                # Use st.empty() for status message in the sidebar
+                quick_status_placeholder = st.empty() 
+
+                if st.button("🚀 Run Quick Analysis", type="primary", use_container_width=True, key='sidebar_quick_analysis_button'):
+                    quick_status_placeholder.info("Starting One-click Analysis process...")
+                    
+                    # 1. Run the full process
+                    final_excel_stream, analysis_results, chart_data_df = quick_download_process(uploaded_files, file_configs)
+                    
+                    if final_excel_stream:
+                        
+                        # 2. Store results for main content display
+                        st.session_state['quick_analysis_chart_data'] = chart_data_df
+                        st.session_state['quick_analysis_success'] = True
+                        st.session_state['quick_analysis_results'] = analysis_results
+                        st.session_state['quick_analysis_stream'] = final_excel_stream
+                        
+                        # 3. Handle filename and show download button
+                        file_names_without_ext = [f.name.rsplit('.', 1)[0] for f in uploaded_files]
+                        if len(file_names_without_ext) > 1:
+                            first_name = file_names_without_ext[0][:10]
+                            quick_filename = f"{first_name}_Multi_Analysis_Report.xlsx"
+                        else:
+                             quick_filename = f"{file_names_without_ext[0]}_Analysis_Report.xlsx" if file_names_without_ext else "Final_Analysis_Report.xlsx"
+
+                        quick_status_placeholder.success("Analysis Complete! Scroll down for the graph and download link.")
+                        
+                        st.download_button(
+                            label="📥 Download Final Report",
+                            data=final_excel_stream,
+                            file_name=quick_filename,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key='quick_download_button_final_sidebar',
+                            type="secondary" 
+                        )
+                        st.toast("Download link generated!")
+                        
+                        # Rerun to display the chart in the main body immediately
+                        st.rerun() 
+                    else:
+                        quick_status_placeholder.error("One-click Analysis failed. Please check file formats and configurations.")
+                        st.session_state['quick_analysis_success'] = False
+                        st.session_state['quick_analysis_chart_data'] = None
+
+            st.markdown("---") 
+            
+            # --- 2. CONFIGURATION SECTION ---
+            st.header("⚙️ Individual File Configuration")
             st.warning("Verify the settings below for **each** uploaded file. Defaults are based on common MSB reports.")
             
-            # --- 1. BUILD CONFIGURATION LIST (MUST RUN before the button logic) ---
             for i, uploaded_file in enumerate(uploaded_files):
                 
                 with st.expander(f"**{uploaded_file.name}**", expanded=i == 0):
@@ -585,159 +647,141 @@ def app():
                     }
                     file_configs.append(config)
                     
-            st.markdown("---") # Separator before file config details
-            
-            # --- 2. ONE-CLICK DOWNLOAD (The primary action, uses the populated file_configs) ---
-            with st.container(border=True):
-                st.subheader("🎯 One-click Analysis")
-                st.markdown("Fully automate both steps: Extract, consolidate, analyze, and download the final 10-minute report.")
-                
-                # Use st.empty() for status message in the sidebar
-                quick_status_placeholder = st.empty() 
-
-                # The button is now aware of the populated file_configs list
-                if st.button("⚡ Quick Download Final Report", type="primary", use_container_width=True, key='sidebar_quick_analysis_button'):
-                    quick_status_placeholder.info("Starting One-click Analysis process...")
-                    
-                    # file_configs is guaranteed to be populated here if uploaded_files is not empty
-                    final_excel_stream = quick_download_process(uploaded_files, file_configs)
-                    
-                    if final_excel_stream:
-                        quick_status_placeholder.success("Quick Analysis Complete! Generating download link...")
-                        
-                        # Generate filename
-                        file_names_without_ext = [f.name.rsplit('.', 1)[0] for f in uploaded_files]
-                        if len(file_names_without_ext) > 1:
-                            first_name = file_names_without_ext[0][:10]
-                            quick_filename = f"{first_name}_Multi_Analysis_Report.xlsx"
-                        else:
-                             quick_filename = f"{file_names_without_ext[0]}_Analysis_Report.xlsx" if file_names_without_ext else "Final_Analysis_Report.xlsx"
-
-                        st.download_button(
-                            label="📥 Click to Download Final Report",
-                            data=final_excel_stream,
-                            file_name=quick_filename,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key='quick_download_button_final_sidebar',
-                            type="secondary" 
-                        )
-                        st.toast("Download link generated!")
-                    else:
-                        quick_status_placeholder.error("One-click Analysis failed. Please check file formats and sidebar configurations.")
-
         else:
             st.info("Upload files to see configuration settings here.")
 
 
-    # --- Main Workflow Buttons (Staged Workflow now takes full width) ---
+    # --- Main Content Area Logic ---
     st.markdown("---")
     
     if uploaded_files:
         
-        # --- STAGED WORKFLOW (Full Width) ---
-        with st.container():
-            st.subheader("🪜 Staged Workflow")
-            st.markdown("Process step-by-step to check intermediate results and perform verification.")
+        # --- DISPLAY QUICK ANALYSIS RESULTS (if successful) ---
+        if st.session_state.get('quick_analysis_success') and st.session_state.get('quick_analysis_chart_data') is not None:
+            st.success("✅ Quick Analysis Complete! Below is the Daily Max Load Overview.")
             
-            # --- Stage 1: Consolidate Raw Data ---
-            if st.button("1. Consolidate Raw Data (Extract/Prepare)", type="primary", help="Reads files, extracts configured columns, and prepares data for 10-minute analysis.", use_container_width=True):
-                # Use the file_configs list populated in the sidebar
-                processed_data_dict = process_uploaded_files(uploaded_files, file_configs)
-                
-                if processed_data_dict:
-                    st.session_state['consolidated_data'] = processed_data_dict
-                    st.success(f"Stage 1 Complete: Successfully extracted data from {len(processed_data_dict)} of {len(uploaded_files)} file(s).")
-
-                    # Raw Data Download Section
-                    st.markdown("---")
-                    st.markdown("##### Intermediate Raw Data Download (Optional)")
-                    
-                    file_names_without_ext = [f.name.rsplit('.', 1)[0] for f in uploaded_files]
-                    default_filename = "EnergyAnalyser_Consolidated_Raw_Data.xlsx"
-                    
-                    if len(file_names_without_ext) > 1:
-                        first_name = file_names_without_ext[0][:17] + "..." if len(file_names_without_ext[0]) > 20 else file_names_without_ext[0]
-                        default_filename = f"{first_name}_and_{len(file_names_without_ext) - 1}_More_Consolidated.xlsx"
-                    elif file_names_without_ext:
-                        default_filename = f"{file_names_without_ext[0]}_Consolidated.xlsx"
-                    
-                    custom_filename = st.text_input(
-                        "Output Excel Filename (Raw):",
-                        value=default_filename,
-                        key="output_filename_input_raw",
-                        help="Enter the name for the intermediate raw data file."
-                    )
-                    
-                    excel_data = to_excel_consolidation(processed_data_dict)
-                    
-                    st.download_button(
-                        label="📥 Download Consolidated Raw Data",
-                        data=excel_data,
-                        file_name=custom_filename,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="secondary", # Secondary style for intermediate download
-                        use_container_width=True
-                    )
-                else:
-                    st.error("Stage 1 failed: No data could be successfully processed. Review sidebar settings.")
+            total_processed_days = sum(len(df['Date'].unique()) for df in st.session_state['quick_analysis_results'].values())
+            
+            st.info(f"Report generated with data for {total_processed_days} day(s) across {len(st.session_state['quick_analysis_results'])} sheet(s).")
+            
+            st.subheader("📈 Daily Max Load Overview (Quick Analysis Result)")
+            st.line_chart(st.session_state['quick_analysis_chart_data'], use_container_width=True)
+            
+            # Clear state to prevent graph from showing on subsequent unrelated runs
+            st.session_state['quick_analysis_success'] = False
+            st.session_state['quick_analysis_chart_data'] = None 
+            st.session_state['quick_analysis_results'] = None
+            st.session_state['quick_analysis_stream'] = None
             
             st.markdown("---")
 
-            # --- Stage 2: 10-Minute Power Analysis ---
-            if 'consolidated_data' in st.session_state and st.session_state['consolidated_data']:
-                
-                st.info(f"Step 2 Enabled: Ready to analyze {len(st.session_state['consolidated_data'])} sheet(s) of consolidated data.")
-                
-                if st.button("2. Run 10-Minute Analysis (Final Report)", type="primary", help="Analyzes the consolidated data, removes zero-padding, resamples to 10-minute intervals, and generates the final Excel report with charts.", use_container_width=True):
-                    st.write("Processing data for 10-minute intervals...")
-                    analysis_results = {}
-                    total_processed_days = 0
-                    
-                    for sheet_name, df_raw in st.session_state['consolidated_data'].items():
-                        processed_df = process_sheet(df_raw, 'Date', 'Time', PSUM_OUTPUT_NAME)
-                        
-                        if not processed_df.empty:
-                            analysis_results[sheet_name] = processed_df
-                            total_processed_days += len(processed_df['Date'].unique())
+        
+        # --- STAGED WORKFLOW (Full Width) ---
+        st.subheader("🪜 Staged Workflow")
+        st.markdown("Process step-by-step to check intermediate results and perform verification.")
+        
+        # --- Stage 1: Consolidate Raw Data ---
+        if st.button("1. Consolidate Raw Data (Extract/Prepare)", type="primary", help="Reads files, extracts configured columns, and prepares data for 10-minute analysis.", use_container_width=True):
+            # Use the file_configs list populated in the sidebar
+            processed_data_dict = process_uploaded_files(uploaded_files, file_configs)
+            
+            if processed_data_dict:
+                st.session_state['consolidated_data'] = processed_data_dict
+                st.success(f"Stage 1 Complete: Successfully extracted data from {len(processed_data_dict)} of {len(uploaded_files)} file(s).")
 
-                    if analysis_results:
-                        
-                        # 1. Prepare Chart Data for Streamlit
-                        chart_data_df, total_sheet_data = prepare_chart_data(analysis_results)
-                        
-                        # 2. Display Chart in Streamlit
-                        st.subheader("Daily Max Load Overview (Total Sheet Graph)")
-                        st.line_chart(chart_data_df, use_container_width=True)
-
-                        # 3. Generate Excel
-                        output_stream = build_output_excel(analysis_results, total_sheet_data)
-                        
-                        st.success(f"Stage 2 Complete! Report generated with data for {total_processed_days} day(s) across {len(analysis_results)} sheet(s).")
-                        st.balloons()
-                        
-                        # Download button for analysis data
-                        default_analysis_filename = "10Min_Power_Analysis_Report.xlsx"
-                        
-                        st.download_button(
-                            label="⬇️ Download Final Analysis Report",
-                            data=output_stream,
-                            file_name=default_analysis_filename,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key='staged_download_button_final',
-                            type="secondary",
-                            use_container_width=True
-                        )
-                    else:
-                        st.error("No data was suitable for 10-minute analysis. Check data integrity.")
-                        
+                # Raw Data Download Section
+                st.markdown("---")
+                st.markdown("##### Intermediate Raw Data Download (Optional)")
+                
+                file_names_without_ext = [f.name.rsplit('.', 1)[0] for f in uploaded_files]
+                default_filename = "EnergyAnalyser_Consolidated_Raw_Data.xlsx"
+                
+                if len(file_names_without_ext) > 1:
+                    first_name = file_names_without_ext[0][:17] + "..." if len(file_names_without_ext[0]) > 20 else file_names_without_ext[0]
+                    default_filename = f"{first_name}_and_{len(file_names_without_ext) - 1}_More_Consolidated.xlsx"
+                elif file_names_without_ext:
+                    default_filename = f"{file_names_without_ext[0]}_Consolidated.xlsx"
+                
+                custom_filename = st.text_input(
+                    "Output Excel Filename (Raw):",
+                    value=default_filename,
+                    key="output_filename_input_raw",
+                    help="Enter the name for the intermediate raw data file."
+                )
+                
+                excel_data = to_excel_consolidation(processed_data_dict)
+                
+                st.download_button(
+                    label="📥 Download Consolidated Raw Data",
+                    data=excel_data,
+                    file_name=custom_filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="secondary", # Secondary style for intermediate download
+                    use_container_width=True
+                )
             else:
-                st.markdown("_Complete step 1 to enable step 2._")
+                st.error("Stage 1 failed: No data could be successfully processed. Review sidebar settings.")
+        
+        st.markdown("---")
+
+        # --- Stage 2: 10-Minute Power Analysis ---
+        if 'consolidated_data' in st.session_state and st.session_state['consolidated_data']:
+            
+            st.info(f"Step 2 Enabled: Ready to analyze {len(st.session_state['consolidated_data'])} sheet(s) of consolidated data.")
+            
+            if st.button("2. Run 10-Minute Analysis (Final Report)", type="primary", help="Analyzes the consolidated data, removes zero-padding, resamples to 10-minute intervals, and generates the final Excel report with charts.", use_container_width=True):
+                st.write("Processing data for 10-minute intervals...")
+                analysis_results = {}
+                total_processed_days = 0
                 
+                for sheet_name, df_raw in st.session_state['consolidated_data'].items():
+                    processed_df = process_sheet(df_raw, 'Date', 'Time', PSUM_OUTPUT_NAME)
+                    
+                    if not processed_df.empty:
+                        analysis_results[sheet_name] = processed_df
+                        total_processed_days += len(processed_df['Date'].unique())
+
+                if analysis_results:
+                    
+                    # 1. Prepare Chart Data for Streamlit
+                    chart_data_df, total_sheet_data = prepare_chart_data(analysis_results)
+                    
+                    # 2. Display Chart in Streamlit
+                    st.subheader("Daily Max Load Overview (Staged Workflow Graph)")
+                    st.line_chart(chart_data_df, use_container_width=True)
+
+                    # 3. Generate Excel
+                    output_stream = build_output_excel(analysis_results, total_sheet_data)
+                    
+                    st.success(f"Stage 2 Complete! Report generated with data for {total_processed_days} day(s) across {len(analysis_results)} sheet(s).")
+                    st.balloons()
+                    
+                    # Download button for analysis data
+                    default_analysis_filename = "10Min_Power_Analysis_Report.xlsx"
+                    
+                    st.download_button(
+                        label="⬇️ Download Final Analysis Report",
+                        data=output_stream,
+                        file_name=default_analysis_filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key='staged_download_button_final',
+                        type="secondary",
+                        use_container_width=True
+                    )
+                else:
+                    st.error("No data was suitable for 10-minute analysis. Check data integrity.")
+                    
+        else:
+            st.markdown("_Complete step 1 to enable step 2._")
+            
     else:
         st.info("Upload your CSV files above to begin configuration and processing.")
 
 if __name__ == "__main__":
     if 'consolidated_data' not in st.session_state:
         st.session_state['consolidated_data'] = None
+    # Initialize state for quick analysis results
+    if 'quick_analysis_success' not in st.session_state:
+        st.session_state['quick_analysis_success'] = False
         
     app()
