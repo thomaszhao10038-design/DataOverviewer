@@ -14,11 +14,10 @@ DATE_FORMAT_MAP = {
     "DD/MM/YYYY": "%d/%m/%Y %H:%M:%S",
     "YYYY-MM-DD": "%Y-%m-%d %H:%M:%S"
 }
-
 # Constants for Code 2
 POWER_COL_OUT = 'PSumW'
 
-# --- Helper Function for Excel Column Conversion (from Code 1) ---
+# --- Helper Function for Excel Column Conversion ---
 def excel_col_to_index(col_str):
     """
     Converts an Excel column string (e.g., 'A', 'AA', 'BI') to a 0-based column index.
@@ -26,7 +25,6 @@ def excel_col_to_index(col_str):
     """
     col_str = col_str.upper().strip()
     index = 0
-    # A=1, B=2, ..., Z=26
     for char in col_str:
         if 'A' <= char <= 'Z':
             index = index * 26 + (ord(char) - ord('A') + 1)
@@ -36,7 +34,7 @@ def excel_col_to_index(col_str):
     return index - 1
 
 # -------------------------------------
-# --- Functions from Code 2.py (Analysis) ---
+# --- Functions from Code 2 (Analysis) ---
 # -------------------------------------
 
 def process_sheet(df, date_col, time_col, psum_col):
@@ -53,7 +51,7 @@ def process_sheet(df, date_col, time_col, psum_col):
     df['Timestamp'] = pd.to_datetime(combined_dt_series, errors="coerce", format='%d/%m/%Y %H:%M:%S')
     timestamp_col = 'Timestamp'
     
-    # 2. Clean and convert power column (handle potential commas, although Code 1 should output clean data)
+    # 2. Clean and convert power column 
     power_series = df[psum_col].astype(str).str.strip()
     # Replace comma decimal separator if it somehow persisted or was introduced
     power_series = power_series.str.replace(',', '.', regex=False) 
@@ -67,7 +65,6 @@ def process_sheet(df, date_col, time_col, psum_col):
     # --- CORE LOGIC: FILTER LEADING AND TRAILING ZEROS ---
     
     # Identify indices where the absolute power reading is non-zero
-    # np.isclose is safer than != 0 for float comparisons
     non_zero_indices = df[~np.isclose(df[psum_col].abs(), 0.0)].index
     
     if non_zero_indices.empty:
@@ -176,16 +173,16 @@ def build_output_excel(sheets_dict, total_sheet_data):
     using the pre-calculated total_sheet_data for the 'Total' sheet.
     """
     wb = Workbook()
+    # Remove default sheet if it exists
     if 'Sheet' in wb.sheetnames:
         wb.remove(wb['Sheet'])
 
     header_fill = PatternFill(start_color='ADD8E6', end_color='ADD8E6', fill_type='solid')
     title_font = Font(bold=True, size=12)
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'),
-                              top=Side(style='thin'), bottom=Side(style='thin'))
+                             top=Side(style='thin'), bottom=Side(style='thin'))
 
-    sheet_names_list = list(sheets_dict.keys())
-
+    # Process Individual Sheets
     for sheet_name, df in sheets_dict.items():
         ws = wb.create_sheet(sheet_name)
         # Ensure 'Date' column is converted to datetime.date objects for sorting
@@ -307,7 +304,6 @@ def build_output_excel(sheets_dict, total_sheet_data):
         ws_total = wb.create_sheet("Total")
         
         sorted_dates = sorted(total_sheet_data.keys())
-        # Re-derive sheet names list in case sheets_dict was empty for some reason
         all_sheet_names = sorted(list(set(sheet for date_data in total_sheet_data.values() for sheet in date_data.keys())))
         
         headers = ["Date"] + all_sheet_names + ["Total Load"]
@@ -375,13 +371,15 @@ def build_output_excel(sheets_dict, total_sheet_data):
     return stream
 
 # -------------------------------------
-# --- Functions from Code 1.py (Consolidation) ---
+# --- Functions from Code 1 (Consolidation) ---
 # -------------------------------------
 
+@st.cache_data
 def process_uploaded_files(uploaded_files, file_configs):
     """
     Reads multiple CSV files, extracts configured columns, cleans PSum data, 
     and returns a dictionary of DataFrames based on individual file configurations.
+    Uses st.cache_data for performance.
     """
     processed_data = {}
     
@@ -404,7 +402,7 @@ def process_uploaded_files(uploaded_files, file_configs):
             if len(set(col_indices)) != 3:
                 st.error(f"Error for file **{filename}**: Date, Time, and PSum must be extracted from three unique column indices. Check columns {config['date_col_str']}, {config['time_col_str']}, {config['psum_col_str']}.")
                 continue
-                
+            
             header_index = int(config['start_row_num']) - 1 
             date_format_string = DATE_FORMAT_MAP.get(config['selected_date_format'])
             separator = config['delimiter_input']
@@ -419,8 +417,8 @@ def process_uploaded_files(uploaded_files, file_configs):
             
             max_index = max(col_indices)
             if df_full.shape[1] < max_index + 1:
-                 st.error(f"File **{filename}** failed to read data correctly. It only has {df_full.shape[1]} columns. This usually means the **CSV Delimiter** ('{separator}') is incorrect for this file.")
-                 continue
+                st.error(f"File **{filename}** failed to read data correctly. It only has {df_full.shape[1]} columns. This usually means the **CSV Delimiter** ('{separator}') is incorrect for this file.")
+                continue
 
             df_extracted = df_full.iloc[:, col_indices].copy()
             
@@ -431,7 +429,7 @@ def process_uploaded_files(uploaded_files, file_configs):
             
             if PSUM_OUTPUT_NAME in df_extracted.columns:
                 df_extracted[PSUM_OUTPUT_NAME] = pd.to_numeric(
-                    df_extracted[PSUM_OUTPUT_NAME], 
+                    df_extracted[PSUM_OUTPUT_NAME].astype(str).str.replace(',', '.', regex=False), 
                     errors='coerce' 
                 )
 
@@ -493,8 +491,8 @@ def to_excel_consolidation(data_dict):
                     time_col_index = df.columns.get_loc('Time')
                     worksheet.set_column(time_col_index, time_col_index, 10, text_format)
             except Exception as e:
-                # print(f"Error applying explicit xlsxwriter formats: {e}") # Suppress console output in final app
-                pass
+                 # Suppress console output in final app
+                 pass
             
     output.seek(0)
     return output.getvalue()
@@ -507,15 +505,15 @@ def to_excel_consolidation(data_dict):
 def app():
     st.set_page_config(layout="wide", page_title="EnergyAnalyser Pro")
     
-    # --- Title Change Here ---
+    # --- Title ---
     st.title("⚡ DataAnalyser Pro for MSB")
     
+    # --- Stage 1: Upload and Configuration (Moved Config to Sidebar) ---
     st.markdown("""
-        ### **Stage 1: CSV Data Consolidation (from Code 1)**
-        Upload your raw energy data CSV files to extract **Date**, **Time**, and **PSum** and consolidate them into a single Excel file.
+        ### **Stage 1: CSV Data Consolidation**
+        Upload your raw energy data CSV files. Use the **sidebar** to configure extraction settings for each file.
     """)
 
-    # --- Stage 1: Upload and Configuration (from Code 1) ---
     uploaded_files = st.file_uploader(
         "Choose up to 10 CSV files", 
         type=["csv"], 
@@ -529,42 +527,43 @@ def app():
     file_configs = []
     
     if uploaded_files:
-        st.header("Individual File Configuration")
-        st.warning("Please verify the Delimiter, Start Row, and Column Letters for each file below.")
         
-        for i, uploaded_file in enumerate(uploaded_files):
-            with st.expander(f"⚙️ Settings for **{uploaded_file.name}**", expanded=i == 0):
-                
-                # Column Configuration
-                st.subheader("Column Letters")
-                date_col_str = st.text_input("Date Column Letter", value='A', key=f'date_col_str_{i}')
-                time_col_str = st.text_input("Time Column Letter", value='B', key=f'time_col_str_{i}')
-                ps_um_col_str = st.text_input("PSum Column Letter", value='BI', key=f'psum_col_str_{i}', help="PSum (Total Active Power) column letter in this file (e.g., 'BI').")
+        # --- SIDEBAR CONFIGURATION ---
+        with st.sidebar:
+            st.header("Individual File Configuration")
+            st.markdown("⚠️ **Verify settings for each uploaded file.**")
+        
+            for i, uploaded_file in enumerate(uploaded_files):
+                with st.expander(f"⚙️ **{uploaded_file.name}**", expanded=i == 0):
+                    
+                    # Column Configuration
+                    st.subheader("Column Letters")
+                    date_col_str = st.text_input("Date Column Letter", value='A', key=f'date_col_str_{i}')
+                    time_col_str = st.text_input("Time Column Letter", value='B', key=f'time_col_str_{i}')
+                    ps_um_col_str = st.text_input("PSum Column Letter", value='BI', key=f'psum_col_str_{i}', help="PSum (Total Active Power) column letter (e.g., 'BI').")
 
-                # CSV File Settings
-                st.subheader("CSV File Parsing")
-                delimiter_input = st.text_input("CSV Delimiter (Separator)", value=',', key=f'delimiter_input_{i}', help="The character used to separate values (e.g., ',', ';', or '\\t').")
-                start_row_num = st.number_input("Header Row Number", min_value=1, value=3, key=f'start_row_num_{i}', help="The row number that contains the column headers.")
-                selected_date_format = st.selectbox("Date Format for Parsing", options=["DD/MM/YYYY", "YYYY-MM-DD"], index=0, key=f'selected_date_format_{i}')
-                
-                config = {
-                    'date_col_str': date_col_str, 'time_col_str': time_col_str, 'psum_col_str': ps_um_col_str,
-                    'delimiter_input': delimiter_input, 'start_row_num': start_row_num, 
-                    'selected_date_format': selected_date_format,
-                }
-                file_configs.append(config)
-                
+                    # CSV File Settings
+                    st.subheader("CSV File Parsing")
+                    delimiter_input = st.text_input("CSV Delimiter (Separator)", value=',', key=f'delimiter_input_{i}', help="The character used to separate values (e.g., ',', ';', or '\\t').")
+                    start_row_num = st.number_input("Header Row Number", min_value=1, value=3, key=f'start_row_num_{i}', help="The row number that contains the column headers.")
+                    selected_date_format = st.selectbox("Date Format for Parsing", options=["DD/MM/YYYY", "YYYY-MM-DD"], index=0, key=f'selected_date_format_{i}')
+                    
+                    config = {
+                        'date_col_str': date_col_str, 'time_col_str': time_col_str, 'psum_col_str': ps_um_col_str,
+                        'delimiter_input': delimiter_input, 'start_row_num': start_row_num, 
+                        'selected_date_format': selected_date_format,
+                    }
+                    file_configs.append(config)
+        # --- END SIDEBAR CONFIGURATION ---
+        
         if st.button("🚀 Process & Consolidate Files"):
             processed_data_dict = process_uploaded_files(uploaded_files, file_configs)
             
             if processed_data_dict:
                 st.session_state['consolidated_data'] = processed_data_dict
-                st.header("Consolidated Raw Data Output")
+                st.header("Stage 1: Consolidation Complete")
                 
-                first_sheet_name = next(iter(processed_data_dict))
-                st.subheader(f"Preview of: {first_sheet_name}")
-                st.dataframe(processed_data_dict[first_sheet_name].head())
-                st.success(f"Successfully processed {len(processed_data_dict)} of {len(uploaded_files)} file(s).")
+                st.success(f"Successfully processed {len(processed_data_dict)} of {len(uploaded_files)} file(s). Data is ready for Stage 2.")
 
                 # Generate default filename for raw data
                 file_names_without_ext = [f.name.rsplit('.', 1)[0] for f in uploaded_files]
@@ -591,13 +590,13 @@ def app():
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             else:
-                st.error("No data could be successfully processed in Stage 1.")
+                st.error("No data could be successfully processed in Stage 1. Please check the configurations in the sidebar.")
             
-    # --- Stage 2: 10-Minute Power Analysis (from Code 2) ---
+    # --- Stage 2: 10-Minute Power Analysis ---
     st.markdown("""
         ---
-        ### **Stage 2: 10-Minute Power Analysis (from Code 2)**
-        Run the 10-minute interval and max power analysis on the **consolidated data** generated in Stage 1.
+        ### **Stage 2: 10-Minute Power Analysis**
+        Run the 10-minute interval and max power analysis on the consolidated data from Stage 1.
     """)
 
     if 'consolidated_data' in st.session_state and st.session_state['consolidated_data']:
@@ -628,7 +627,7 @@ def app():
                 # 2. Display Chart in Streamlit
                 st.header("Daily Max Load Overview (Total Sheet Graph)")
                 st.line_chart(chart_data_df, use_container_width=True)
-                st.dataframe(chart_data_df) # Optional: show the underlying data
+                st.dataframe(chart_data_df)
 
                 # 3. Generate Excel
                 output_stream = build_output_excel(analysis_results, total_sheet_data)
