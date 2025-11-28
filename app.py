@@ -6,7 +6,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, PatternFill, Font, Border, Side, numbers
 from openpyxl.chart import LineChart, Reference, Series
 from openpyxl.utils import get_column_letter
-import datetime # Added for robustness, though not strictly needed here
+import datetime
 
 # --- Configuration & Constants ---
 HEADER_ROW_INDEX = 2
@@ -64,7 +64,9 @@ def process_uploaded_files(uploaded_files, columns_config, header_index):
             df_extracted[PSUM_RAW_NAME] = pd.to_numeric(power_series, errors='coerce')
             
             # 2. Date and Time formatting cleanup (standardize date strings)
-            df_extracted['Date'] = pd.to_datetime(df_extracted['Date'], errors='coerce', dayfirst=True).dt.strftime('%d/%m/%Y')
+            # infer_datetime_format=True enables robust parsing of various formats including YYYY-MM-DD,
+            # while dayfirst=True maintains the preference for DD/MM/YYYY when the format is ambiguous.
+            df_extracted['Date'] = pd.to_datetime(df_extracted['Date'], errors='coerce', dayfirst=True, infer_datetime_format=True).dt.strftime('%d/%m/%Y')
             df_extracted['Time'] = pd.to_datetime(df_extracted['Time'], errors='coerce').dt.strftime('%H:%M:%S')
 
             df_final = df_extracted[['Date', 'Time', PSUM_RAW_NAME]].copy()
@@ -207,14 +209,12 @@ def build_output_excel(sheets_dict):
             ws.cell(row=2, column=col_start+2, value="Active Power (W)")
             ws.cell(row=2, column=col_start+3, value="kW")
 
-            # START OF USER-REQUESTED CHANGE (Final fix for Date display)
-            # Merge UTC column (Starts at row 3). The value is now the date object.
+            # Merge UTC column (Starts at row 3). The value is the date object.
             ws.merge_cells(start_row=merge_start, start_column=col_start, end_row=merge_end, end_column=col_start)
             date_cell = ws.cell(row=merge_start, column=col_start, value=date)
             date_cell.alignment = Alignment(horizontal="center", vertical="center")
             # Set the number format explicitly to ensure Excel interprets the numeric value as a date
             date_cell.number_format = 'YYYY-MM-DD' 
-            # END OF USER-REQUESTED CHANGE
 
             # Fill data (starts at row 3)
             for idx, r in enumerate(day_data_full.itertuples(), start=merge_start):
