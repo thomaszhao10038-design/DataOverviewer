@@ -512,10 +512,6 @@ def quick_download_process(uploaded_files, file_configs):
     analysis_results = {}
     
     for sheet_name, df_raw in processed_data_dict.items():
-        # Ensure file pointer is reset before processing multiple times
-        # Note: uploaded_files are in memory, seeking is generally not needed here, 
-        # but the files were re-read in the consolidation step.
-        
         processed_df = process_sheet(df_raw, 'Date', 'Time', PSUM_OUTPUT_NAME)
         if not processed_df.empty:
             analysis_results[sheet_name] = processed_df
@@ -551,10 +547,49 @@ def app():
     
     file_configs = []
     
-    # --- Sidebar Configuration ---
+    # --- Sidebar Configuration & One-click Action (New Location) ---
     with st.sidebar:
         st.header("⚙️ Individual File Configuration")
+        
         if uploaded_files:
+            # --- ONE-CLICK DOWNLOAD (The primary action, now in sidebar) ---
+            with st.container(border=True):
+                st.subheader("🎯 One-click Analysis")
+                st.markdown("Fully automate both steps: Extract, consolidate, analyze, and download the final 10-minute report.")
+                
+                # Use st.empty() for status message in the sidebar
+                quick_status_placeholder = st.empty() 
+
+                if st.button("⚡ Quick Download Final Report", type="primary", use_container_width=True, key='sidebar_quick_analysis_button'):
+                    quick_status_placeholder.info("Starting One-click Analysis process...")
+                    
+                    final_excel_stream = quick_download_process(uploaded_files, file_configs)
+                    
+                    if final_excel_stream:
+                        quick_status_placeholder.success("Quick Analysis Complete! Generating download link...")
+                        
+                        # Generate filename
+                        file_names_without_ext = [f.name.rsplit('.', 1)[0] for f in uploaded_files]
+                        if len(file_names_without_ext) > 1:
+                            first_name = file_names_without_ext[0][:10]
+                            quick_filename = f"{first_name}_Multi_Analysis_Report.xlsx"
+                        else:
+                             quick_filename = f"{file_names_without_ext[0]}_Analysis_Report.xlsx" if file_names_without_ext else "Final_Analysis_Report.xlsx"
+
+                        st.download_button(
+                            label="📥 Click to Download Final Report",
+                            data=final_excel_stream,
+                            file_name=quick_filename,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key='quick_download_button_final_sidebar',
+                            type="secondary" 
+                        )
+                        st.toast("Download link generated!")
+                    else:
+                        quick_status_placeholder.error("One-click Analysis failed. Please check file formats and sidebar configurations.")
+
+            st.markdown("---") # Separator before file config details
+
             st.warning("Verify the settings below for **each** uploaded file. Defaults are based on common MSB reports.")
             
             for i, uploaded_file in enumerate(uploaded_files):
@@ -583,56 +618,18 @@ def app():
             st.info("Upload files to see configuration settings here.")
 
 
-    # --- Main Workflow Buttons ---
+    # --- Main Workflow Buttons (Staged Workflow now takes full width) ---
     st.markdown("---")
     
     if uploaded_files:
-        # Use two columns for clear division of the two paths
-        col_quick, col_staged = st.columns([1, 2])
         
-        # --- ONE-CLICK DOWNLOAD (The primary action) ---
-        with col_quick:
-            with st.container(border=True):
-                st.subheader("🎯 One-click Analysis")
-                st.markdown("Fully automate both steps: Extract, consolidate, analyze, and download the final 10-minute report.")
-                
-                if st.button("⚡ Quick Download Final Report", type="primary", use_container_width=True):
-                    # Use a dedicated container for quick download status
-                    quick_status = st.empty()
-                    quick_status.info("Starting One-click Analysis process...")
-                    
-                    final_excel_stream = quick_download_process(uploaded_files, file_configs)
-                    
-                    if final_excel_stream:
-                        quick_status.success("Quick Analysis Complete! Generating download link...")
-                        
-                        # Generate filename
-                        file_names_without_ext = [f.name.rsplit('.', 1)[0] for f in uploaded_files]
-                        if len(file_names_without_ext) > 1:
-                            first_name = file_names_without_ext[0][:10]
-                            quick_filename = f"{first_name}_Multi_Analysis_Report.xlsx"
-                        else:
-                             quick_filename = f"{file_names_without_ext[0]}_Analysis_Report.xlsx" if file_names_without_ext else "Final_Analysis_Report.xlsx"
-
-                        st.download_button(
-                            label="📥 Click to Download Final Report",
-                            data=final_excel_stream,
-                            file_name=quick_filename,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key='quick_download_button_final',
-                            type="secondary" # Secondary here because it's the *result* of the primary button press
-                        )
-                        st.toast("Download link generated!")
-                    else:
-                        quick_status.error("One-click Analysis failed. Please check file formats and sidebar configurations.")
-
-        # --- STAGED WORKFLOW (Step-by-step control) ---
-        with col_staged:
+        # --- STAGED WORKFLOW (Full Width) ---
+        with st.container():
             st.subheader("🪜 Staged Workflow")
             st.markdown("Process step-by-step to check intermediate results and perform verification.")
             
             # --- Stage 1: Consolidate Raw Data ---
-            if st.button("1. Consolidate Raw Data (Extract/Prepare)", type="primary", help="Reads files, extracts configured columns, and prepares data for 10-minute analysis."):
+            if st.button("1. Consolidate Raw Data (Extract/Prepare)", type="primary", help="Reads files, extracts configured columns, and prepares data for 10-minute analysis.", use_container_width=True):
                 processed_data_dict = process_uploaded_files(uploaded_files, file_configs)
                 
                 if processed_data_dict:
@@ -666,7 +663,8 @@ def app():
                         data=excel_data,
                         file_name=custom_filename,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="secondary" # Secondary style for intermediate download
+                        type="secondary", # Secondary style for intermediate download
+                        use_container_width=True
                     )
                 else:
                     st.error("Stage 1 failed: No data could be successfully processed. Review sidebar settings.")
@@ -678,7 +676,7 @@ def app():
                 
                 st.info(f"Step 2 Enabled: Ready to analyze {len(st.session_state['consolidated_data'])} sheet(s) of consolidated data.")
                 
-                if st.button("2. Run 10-Minute Analysis (Final Report)", type="primary", help="Analyzes the consolidated data, removes zero-padding, resamples to 10-minute intervals, and generates the final Excel report with charts."):
+                if st.button("2. Run 10-Minute Analysis (Final Report)", type="primary", help="Analyzes the consolidated data, removes zero-padding, resamples to 10-minute intervals, and generates the final Excel report with charts.", use_container_width=True):
                     st.write("Processing data for 10-minute intervals...")
                     analysis_results = {}
                     total_processed_days = 0
@@ -714,7 +712,8 @@ def app():
                             file_name=default_analysis_filename,
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key='staged_download_button_final',
-                            type="secondary"
+                            type="secondary",
+                            use_container_width=True
                         )
                     else:
                         st.error("No data was suitable for 10-minute analysis. Check data integrity.")
